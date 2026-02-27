@@ -3,11 +3,10 @@ import pandas as pd
 from datetime import datetime
 
 st.set_page_config(layout="wide")
-
-st.title("Ranking de Plataformas de Leilão – Brasil")
+st.title("Ranking Top-10 de Plataformas de Leilão – Brasil")
 
 # =========================================================
-# PESOS DO MODELO (econômicos)
+# PESOS DO MODELO
 # =========================================================
 
 PESO_SEGURANCA = 0.4
@@ -17,8 +16,7 @@ PESO_FEEDBACK = 0.1
 
 # =========================================================
 # BASE SIMULADA (MVP)
-# Cada linha representa:
-# plataforma + categoria
+# Cada linha = plataforma + categoria
 # =========================================================
 
 def carregar_dados_leiloes():
@@ -74,12 +72,13 @@ def carregar_dados_leiloes():
             "reclamacoes_pos_compra": 18,
             "score_feedback": 7.8
         }
+        # aqui você pode estender com outras plataformas reais
     ]
 
     return pd.DataFrame(dados)
 
 # =========================================================
-# FUNÇÕES ECONÔMICAS DE NORMALIZAÇÃO
+# NORMALIZAÇÃO
 # =========================================================
 
 def calcular_desconto_percentual(preco_leilao, preco_mercado):
@@ -89,21 +88,18 @@ def calcular_desconto_percentual(preco_leilao, preco_mercado):
 
 
 def normalizar_reclamacoes(qtd, max_reclamacoes=50):
-    score = 10 * (1 - min(qtd, max_reclamacoes) / max_reclamacoes)
-    return max(score, 0)
+    return max(10 * (1 - min(qtd, max_reclamacoes) / max_reclamacoes), 0)
 
 
 def normalizar_desconto(desconto, desconto_maximo_referencia=60):
-    score = 10 * min(desconto, desconto_maximo_referencia) / desconto_maximo_referencia
-    return max(score, 0)
+    return max(10 * min(desconto, desconto_maximo_referencia) / desconto_maximo_referencia, 0)
 
 
 # =========================================================
-# SCORE FINAL
+# CALCULA SCORE FINAL
 # =========================================================
 
 def calcular_score_final(linha):
-
     score_custo_beneficio = normalizar_desconto(linha["desconto_percentual"])
     score_reclamacoes = normalizar_reclamacoes(linha["reclamacoes_pos_compra"])
 
@@ -115,7 +111,6 @@ def calcular_score_final(linha):
     )
 
     return score_final
-
 
 # =========================================================
 # APP
@@ -130,7 +125,6 @@ df["desconto_percentual"] = df.apply(
 
 df["score_reclamacoes"] = df["reclamacoes_pos_compra"].apply(normalizar_reclamacoes)
 df["score_custo_beneficio"] = df["desconto_percentual"].apply(normalizar_desconto)
-
 df["score_final"] = df.apply(calcular_score_final, axis=1)
 
 # =========================================================
@@ -149,16 +143,19 @@ categoria_sel = st.sidebar.multiselect(
 df_filtrado = df[df["categoria"].isin(categoria_sel)].copy()
 
 # =========================================================
-# CLASSIFICAÇÃO (RANKING)
+# RANKING TOP-10
 # =========================================================
 
-df_filtrado = df_filtrado.sort_values(
-    ["categoria", "score_final"],
-    ascending=[True, False]
+df_ranked = (
+    df_filtrado
+    .sort_values(["categoria", "score_final"], ascending=[True, False])
+    .groupby("categoria")
+    .head(10)
+    .reset_index(drop=True)
 )
 
-df_filtrado["ranking_na_categoria"] = (
-    df_filtrado
+df_ranked["ranking_na_categoria"] = (
+    df_ranked
     .groupby("categoria")["score_final"]
     .rank(ascending=False, method="dense")
     .astype(int)
@@ -168,11 +165,11 @@ df_filtrado["ranking_na_categoria"] = (
 # EXIBIÇÃO
 # =========================================================
 
-st.subheader("Classificação das plataformas de leilão (por categoria)")
+st.subheader("Top-10 das plataformas de leilão (por categoria)")
 
 st.caption(f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
-tabela = df_filtrado[[
+tabela = df_ranked[[
     "categoria",
     "ranking_na_categoria",
     "plataforma",
@@ -211,6 +208,6 @@ st.write({
 })
 
 st.info(
-    "O ranking é sempre relativo dentro de cada categoria "
+    "Este ranking mostra até os 10 melhores leilões por categoria "
     "(imóveis, carros, motos, eletrônicos, salvados etc.)."
 )
