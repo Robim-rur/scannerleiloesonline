@@ -2,10 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("Scanner Swing Trade – Ranking por Probabilidade (Gain antes do Loss)")
-st.caption("Setup: Keltner Channel + Regressão Linear (slope) + ATR% | Diário com confirmação no semanal | Long only")
+st.title("Ranking estatístico – Keltner + Regressão + ATR%")
+st.caption("Ranking por probabilidade histórica de gain antes do loss | Long only | Diário com filtro semanal")
 
 # =====================================================
 # LISTAS DE ATIVOS
@@ -37,193 +38,184 @@ bdrs_fii = [
     "HGRE11.SA","MXRF11.SA","KNCR11.SA","KNIP11.SA","CPTS11.SA","IRDM11.SA"
 ]
 
-ativos = acoes_100 + bdrs_fii
+ativos = sorted(list(set(acoes_100 + bdrs_fii)))
 
 # =====================================================
-# INDICADORES
+# PARÂMETROS
+# =====================================================
+
+MIN_AMOSTRAS = 20
+
+# =====================================================
+# FUNÇÕES
 # =====================================================
 
 def ema(series, n):
     return series.ewm(span=n, adjust=False).mean()
 
-def atr(df, n=20):
-    tr1 = df["High"] - df["Low"]
-    tr2 = (df["High"] - df["Close"].shift()).abs()
-    tr3 = (df["Low"] - df["Close"].shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+def atr(df, n=10):
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"].shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - close).abs(),
+        (low - close).abs()
+    ], axis=1).max(axis=1)
+
     return tr.rolling(n).mean()
 
-def keltner(df, ema_period=20, atr_period=20, mult=2):
-    mid = ema(df["Close"], ema_period)
-    at = atr(df, atr_period)
-    upper = mid + mult * at
-    lower = mid - mult * at
-    return mid, upper, lower
+def linear_slope(series, window=20):
+    slopes = [np.nan] * len(series)
+    for i in range(window, len(series)):
+        y = series.iloc[i-window:i].values
+        x = np.arange(len(y))
+        coef = np.polyfit(x, y, 1)[0]
+        slopes[i] = coef
+    return pd.Series(slopes, index=series.index)
 
-def linreg_slope(series, n=40):
-    y = series.values[-n:]
-    x = np.arange(n)
-    if len(y) < n:
-        return np.nan
-    slope, _ = np.polyfit(x, y, 1)
-    return slope
+def preparar_dados(ticker):
 
-# =====================================================
-# CONFIRMAÇÃO SEMANAL
-# =====================================================
+    df = yf.download(ticker, period="8y", interval="1d", progress=False)
 
-def slope_semanal(ticker):
+    if df.empty or len(df) < 300:
+        return None, None
 
-    dfw = yf.download(ticker, period="18mo", interval="1wk", progress=False)
+    df.dropna(inplace=True)
 
-    if len(dfw) < 60:
-        return False
+    # evita candle do dia em formação
+    if df.index[-1].date() == datetime.today().date():
+        df = df.iloc[:-1]
 
-    slope = linreg_slope(dfw["Close"], 40)
+    df["EMA20"] = ema(df["Close"], 20)
+    df["ATR"] = atr(df, 10)
+    df["KC_UP"] = df["EMA20"] + 2 * df["ATR"]
+    df["KC_LO"] = df["EMA20"] - 2 * df["ATR"]
 
-    return slope > 0
+    df["SLOPE"] = linear_slope(df["Close"], 20)
+    df["ATR_PCT"] = (df["ATR"] / df["Close"]) * 100
 
-# =====================================================
-# SIMULAÇÃO GAIN x LOSS
-# =====================================================
+    # semanal
+    weekly = df.resample("W-FRI").agg({
+        "Open":"first",
+        "High":"max",
+        "Low":"min",
+        "Close":"last"
+    })
 
-def simular_probabilidade(df, sinais, gain, loss):
+    weekly["EMA20"] = ema(weekly["Close"], 20)
 
-    ganhos = 0
-    perdas = 0
+    return df, weekly
 
-    for i in sinais:
+def sinal_diario(df):
+
+    cond1 = df["Close"] > df["EMA20"]
+    cond2 = df["Close"].shift(1) <= df["EMA20"].shift(1)
+    cond3 = df["SLOPE"] > 0
+    cond4 = (df["ATR_PCT"] > 1) & (df["ATR_PCT"] < 8)
+
+    return cond1 & cond2 & cond3 & cond4
+
+def filtro_semanal(df_daily, weekly):
+
+    w = weekly.reindex(df_daily.index, method="ffill")
+
+    return w["Close"] > w["EMA20"]
+
+def simular(df, sinais, is_acao):
+
+    gains = 0
+    losses = 0
+
+    if is_acao:
+        gain_pct = 0.08
+        loss_pct = 0.05
+    else:
+        gain_pct = 0.06
+        loss_pct = 0.04
+
+    idxs = np.where(sinais)[0]
+
+    for i in idxs:
 
         entrada = df["Close"].iloc[i]
-        alvo = entrada * (1 + gain)
-        stop = entrada * (1 - loss)
+        alvo = entrada * (1 + gain_pct)
+        stop = entrada * (1 - loss_pct)
 
-        for j in range(i + 1, len(df)):
+        future = df.iloc[i+1:]
 
-            maximo = df["High"].iloc[j]
-            minimo = df["Low"].iloc[j]
+        for _, row in future.iterrows():
 
-            bate_gain = maximo >= alvo
-            bate_loss = minimo <= stop
-
-            if bate_gain and not bate_loss:
-                ganhos += 1
+            if row["Low"] <= stop:
+                losses += 1
                 break
 
-            if bate_loss and not bate_gain:
-                perdas += 1
+            if row["High"] >= alvo:
+                gains += 1
                 break
 
-            if bate_gain and bate_loss:
-                perdas += 1
-                break
-
-    total = ganhos + perdas
-
-    if total == 0:
-        return np.nan, 0
-
-    return ganhos / total, total
+    return gains, losses
 
 # =====================================================
-# PROCESSAMENTO
+# EXECUÇÃO
 # =====================================================
+
+st.write("Processando ativos...")
 
 resultados = []
 
-with st.spinner("Processando ativos..."):
+progress = st.progress(0)
 
-    for ticker in ativos:
+for i, ticker in enumerate(ativos):
 
-        try:
+    progress.progress((i+1)/len(ativos))
 
-            df = yf.download(ticker, period="5y", interval="1d", progress=False)
+    try:
 
-            if len(df) < 300:
-                continue
+        df, weekly = preparar_dados(ticker)
 
-            mid, upper, lower = keltner(df)
-            df["kc_mid"] = mid
-            df["kc_upper"] = upper
+        if df is None:
+            continue
 
-            df["atr"] = atr(df, 20)
-            df["atr_pct"] = df["atr"] / df["Close"]
+        sinais = sinal_diario(df)
+        semanal_ok = filtro_semanal(df, weekly)
 
-            slopes = []
-            for i in range(len(df)):
-                if i < 40:
-                    slopes.append(np.nan)
-                else:
-                    slopes.append(linreg_slope(df["Close"].iloc[i-40:i], 40))
+        sinais_final = sinais & semanal_ok
 
-            df["slope"] = slopes
+        is_acao = ticker in acoes_100
 
-            # Setup:
-            # slope > 0
-            # fechamento rompe banda superior
-            # ATR% mínimo
+        gains, losses = simular(df, sinais_final, is_acao)
 
-            sinais = df[
-                (df["slope"] > 0) &
-                (df["Close"] > df["kc_upper"]) &
-                (df["atr_pct"] > 0.012)
-            ].index
+        total = gains + losses
 
-            if len(sinais) < 10:
-                continue
+        if total < MIN_AMOSTRAS:
+            continue
 
-            if not slope_semanal(ticker):
-                continue
+        prob = gains / total
 
-            if ticker in acoes_100:
-                gain = 0.08
-                loss = 0.05
-                classe = "Ação"
-            else:
-                gain = 0.06
-                loss = 0.04
-                classe = "BDR / ETF / FII"
+        resultados.append({
+            "Ativo": ticker,
+            "Amostras": total,
+            "Gains": gains,
+            "Losses": losses,
+            "Probabilidade": round(prob * 100, 2)
+        })
 
-            idx = [df.index.get_loc(i) for i in sinais]
+    except Exception:
+        continue
 
-            prob, amostras = simular_probabilidade(df, idx, gain, loss)
-
-            if pd.isna(prob):
-                continue
-
-            resultados.append({
-                "Ativo": ticker.replace(".SA",""),
-                "Classe": classe,
-                "Prob_Gain_antes_Loss": prob * 100,
-                "Amostras": amostras,
-                "Gain_%": gain * 100,
-                "Loss_%": loss * 100
-            })
-
-        except:
-            pass
-
-# =====================================================
-# RESULTADO
-# =====================================================
-
-st.subheader("Ranking – maior probabilidade histórica de gain antes do loss")
+progress.empty()
 
 if len(resultados) == 0:
-
     st.warning("Nenhum ativo gerou amostras suficientes para o setup.")
+    st.stop()
 
-else:
+df_res = pd.DataFrame(resultados)
+df_res = df_res.sort_values("Probabilidade", ascending=False)
 
-    df_res = pd.DataFrame(resultados)
+st.subheader("Top 10 – maior probabilidade histórica de gain antes do loss")
+st.dataframe(df_res.head(10), use_container_width=True)
 
-    df_res = df_res.sort_values(
-        by=["Prob_Gain_antes_Loss","Amostras"],
-        ascending=[False, False]
-    )
-
-    df_res["Prob_Gain_antes_Loss"] = df_res["Prob_Gain_antes_Loss"].round(2)
-
-    st.dataframe(df_res, use_container_width=True)
-
-    st.caption("Probabilidade calculada por simulação histórica de primeiro toque (gain x loss).")
+st.subheader("Ranking completo")
+st.dataframe(df_res, use_container_width=True)
