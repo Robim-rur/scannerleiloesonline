@@ -5,8 +5,8 @@ import numpy as np
 from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("Ranking estatístico – Keltner + Regressão + ATR%")
-st.caption("Ranking por probabilidade histórica de gain antes do loss | Long only | Diário com filtro semanal")
+st.title("Scanner – Keltner + Regressão (slope) + ATR%")
+st.caption("Diário com confirmação semanal rígida | Long only | Apenas candle fechado")
 
 # =====================================================
 # LISTAS DE ATIVOS
@@ -41,12 +41,6 @@ bdrs_fii = [
 ativos = sorted(list(set(acoes_100 + bdrs_fii)))
 
 # =====================================================
-# PARÂMETROS
-# =====================================================
-
-MIN_AMOSTRAS = 20
-
-# =====================================================
 # FUNÇÕES
 # =====================================================
 
@@ -75,40 +69,22 @@ def linear_slope(series, window=20):
         slopes[i] = coef
     return pd.Series(slopes, index=series.index)
 
-def preparar_dados(ticker):
+def preparar_indicadores(df):
 
-    df = yf.download(ticker, period="8y", interval="1d", progress=False)
-
-    if df.empty or len(df) < 300:
-        return None, None
-
-    df.dropna(inplace=True)
-
-    # evita candle do dia em formação
-    if df.index[-1].date() == datetime.today().date():
-        df = df.iloc[:-1]
+    df = df.copy()
 
     df["EMA20"] = ema(df["Close"], 20)
     df["ATR"] = atr(df, 10)
+
     df["KC_UP"] = df["EMA20"] + 2 * df["ATR"]
     df["KC_LO"] = df["EMA20"] - 2 * df["ATR"]
 
     df["SLOPE"] = linear_slope(df["Close"], 20)
     df["ATR_PCT"] = (df["ATR"] / df["Close"]) * 100
 
-    # semanal
-    weekly = df.resample("W-FRI").agg({
-        "Open":"first",
-        "High":"max",
-        "Low":"min",
-        "Close":"last"
-    })
+    return df
 
-    weekly["EMA20"] = ema(weekly["Close"], 20)
-
-    return df, weekly
-
-def sinal_diario(df):
+def sinal_setup(df):
 
     cond1 = df["Close"] > df["EMA20"]
     cond2 = df["Close"].shift(1) <= df["EMA20"].shift(1)
@@ -117,105 +93,83 @@ def sinal_diario(df):
 
     return cond1 & cond2 & cond3 & cond4
 
-def filtro_semanal(df_daily, weekly):
-
-    w = weekly.reindex(df_daily.index, method="ffill")
-
-    return w["Close"] > w["EMA20"]
-
-def simular(df, sinais, is_acao):
-
-    gains = 0
-    losses = 0
-
-    if is_acao:
-        gain_pct = 0.08
-        loss_pct = 0.05
-    else:
-        gain_pct = 0.06
-        loss_pct = 0.04
-
-    idxs = np.where(sinais)[0]
-
-    for i in idxs:
-
-        entrada = df["Close"].iloc[i]
-        alvo = entrada * (1 + gain_pct)
-        stop = entrada * (1 - loss_pct)
-
-        future = df.iloc[i+1:]
-
-        for _, row in future.iterrows():
-
-            if row["Low"] <= stop:
-                losses += 1
-                break
-
-            if row["High"] >= alvo:
-                gains += 1
-                break
-
-    return gains, losses
-
 # =====================================================
 # EXECUÇÃO
 # =====================================================
 
-st.write("Processando ativos...")
+st.write("Buscando sinais (diário + semanal rígido)...")
 
 resultados = []
 
-progress = st.progress(0)
+barra = st.progress(0)
 
 for i, ticker in enumerate(ativos):
 
-    progress.progress((i+1)/len(ativos))
+    barra.progress((i + 1) / len(ativos))
 
     try:
 
-        df, weekly = preparar_dados(ticker)
+        df = yf.download(ticker, period="8y", interval="1d", progress=False)
 
-        if df is None:
+        if df.empty or len(df) < 300:
             continue
 
-        sinais = sinal_diario(df)
-        semanal_ok = filtro_semanal(df, weekly)
+        df.dropna(inplace=True)
 
-        sinais_final = sinais & semanal_ok
+        # Remove candle do dia em formação (para quem opera à noite/sábado)
+        if df.index[-1].date() == datetime.today().date():
+            df = df.iloc[:-1]
 
-        is_acao = ticker in acoes_100
+        # ======================
+        # Diário
+        # ======================
 
-        gains, losses = simular(df, sinais_final, is_acao)
+        daily = preparar_indicadores(df)
+        sinal_diario = sinal_setup(daily)
 
-        total = gains + losses
+        # ======================
+        # Semanal (setup completo também)
+        # ======================
 
-        if total < MIN_AMOSTRAS:
-            continue
-
-        prob = gains / total
-
-        resultados.append({
-            "Ativo": ticker,
-            "Amostras": total,
-            "Gains": gains,
-            "Losses": losses,
-            "Probabilidade": round(prob * 100, 2)
+        weekly = daily.resample("W-FRI").agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last"
         })
+
+        weekly = preparar_indicadores(weekly)
+        sinal_semanal = sinal_setup(weekly)
+
+        # Alinha semanal ao diário
+        sinal_semanal_alinhado = sinal_semanal.reindex(daily.index, method="ffill")
+
+        # ======================
+        # Sinal final
+        # ======================
+
+        sinal_final = sinal_diario & sinal_semanal_alinhado
+
+        # verifica somente o último candle fechado
+        if sinal_final.iloc[-1]:
+
+            resultados.append({
+                "Ativo": ticker,
+                "Fechamento": round(daily["Close"].iloc[-1], 2),
+                "Slope": round(daily["SLOPE"].iloc[-1], 5),
+                "ATR%": round(daily["ATR_PCT"].iloc[-1], 2)
+            })
 
     except Exception:
         continue
 
-progress.empty()
+barra.empty()
 
 if len(resultados) == 0:
-    st.warning("Nenhum ativo gerou amostras suficientes para o setup.")
+    st.warning("Nenhum ativo gerou sinal com confirmação semanal rígida.")
     st.stop()
 
 df_res = pd.DataFrame(resultados)
-df_res = df_res.sort_values("Probabilidade", ascending=False)
 
-st.subheader("Top 10 – maior probabilidade histórica de gain antes do loss")
-st.dataframe(df_res.head(10), use_container_width=True)
-
-st.subheader("Ranking completo")
+st.subheader("Ativos com sinal válido (diário + semanal rígido)")
 st.dataframe(df_res, use_container_width=True)
