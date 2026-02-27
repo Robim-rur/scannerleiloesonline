@@ -4,10 +4,10 @@ from datetime import datetime
 
 st.set_page_config(layout="wide")
 
-st.title("Ranking de Leilões Online – Brasil (MVP)")
+st.title("Ranking de Plataformas de Leilão – Brasil")
 
 # =========================================================
-# CONFIGURAÇÃO DOS PESOS DO SCORE
+# PESOS DO MODELO (econômicos)
 # =========================================================
 
 PESO_SEGURANCA = 0.4
@@ -17,14 +17,16 @@ PESO_FEEDBACK = 0.1
 
 # =========================================================
 # BASE SIMULADA (MVP)
-# Depois você substituirá isso por scraping / APIs
+# Cada linha representa:
+# plataforma + categoria
 # =========================================================
 
 def carregar_dados_leiloes():
 
     dados = [
         {
-            "leilao": "Superbid",
+            "plataforma": "Superbid",
+            "link": "https://www.superbid.net/",
             "categoria": "Carros",
             "preco_leilao": 38000,
             "preco_mercado": 52000,
@@ -33,7 +35,8 @@ def carregar_dados_leiloes():
             "score_feedback": 8.5
         },
         {
-            "leilao": "Receita Federal",
+            "plataforma": "Receita Federal",
+            "link": "https://www.gov.br/receitafederal/pt-br/assuntos/leiloes",
             "categoria": "Eletrônicos",
             "preco_leilao": 2100,
             "preco_mercado": 3900,
@@ -42,7 +45,8 @@ def carregar_dados_leiloes():
             "score_feedback": 9.3
         },
         {
-            "leilao": "Copart",
+            "plataforma": "Copart",
+            "link": "https://www.copart.com.br/",
             "categoria": "Salvados",
             "preco_leilao": 14500,
             "preco_mercado": 28000,
@@ -51,7 +55,8 @@ def carregar_dados_leiloes():
             "score_feedback": 7.9
         },
         {
-            "leilao": "Zukerman",
+            "plataforma": "Zukerman Leilões",
+            "link": "https://www.zukerman.com.br/",
             "categoria": "Imóveis",
             "preco_leilao": 310000,
             "preco_mercado": 470000,
@@ -60,7 +65,8 @@ def carregar_dados_leiloes():
             "score_feedback": 8.7
         },
         {
-            "leilao": "Sold Leilões",
+            "plataforma": "Sold Leilões",
+            "link": "https://www.sold.com.br/",
             "categoria": "Motos",
             "preco_leilao": 7800,
             "preco_mercado": 13500,
@@ -72,9 +78,8 @@ def carregar_dados_leiloes():
 
     return pd.DataFrame(dados)
 
-
 # =========================================================
-# NORMALIZAÇÕES
+# FUNÇÕES ECONÔMICAS DE NORMALIZAÇÃO
 # =========================================================
 
 def calcular_desconto_percentual(preco_leilao, preco_mercado):
@@ -84,17 +89,11 @@ def calcular_desconto_percentual(preco_leilao, preco_mercado):
 
 
 def normalizar_reclamacoes(qtd, max_reclamacoes=50):
-    """
-    Quanto MENOS reclamação, MAIOR o score.
-    """
     score = 10 * (1 - min(qtd, max_reclamacoes) / max_reclamacoes)
     return max(score, 0)
 
 
 def normalizar_desconto(desconto, desconto_maximo_referencia=60):
-    """
-    Normaliza o desconto para escala 0–10
-    """
     score = 10 * min(desconto, desconto_maximo_referencia) / desconto_maximo_referencia
     return max(score, 0)
 
@@ -141,23 +140,43 @@ df["score_final"] = df.apply(calcular_score_final, axis=1)
 st.sidebar.header("Filtros")
 
 categorias = sorted(df["categoria"].unique())
-categoria_sel = st.sidebar.multiselect("Categoria", categorias, default=categorias)
+categoria_sel = st.sidebar.multiselect(
+    "Categoria",
+    categorias,
+    default=categorias
+)
 
-df_filtrado = df[df["categoria"].isin(categoria_sel)]
+df_filtrado = df[df["categoria"].isin(categoria_sel)].copy()
 
-df_filtrado = df_filtrado.sort_values("score_final", ascending=False)
+# =========================================================
+# CLASSIFICAÇÃO (RANKING)
+# =========================================================
+
+df_filtrado = df_filtrado.sort_values(
+    ["categoria", "score_final"],
+    ascending=[True, False]
+)
+
+df_filtrado["ranking_na_categoria"] = (
+    df_filtrado
+    .groupby("categoria")["score_final"]
+    .rank(ascending=False, method="dense")
+    .astype(int)
+)
 
 # =========================================================
 # EXIBIÇÃO
 # =========================================================
 
-st.subheader("Ranking dos Leilões")
+st.subheader("Classificação das plataformas de leilão (por categoria)")
 
 st.caption(f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
 tabela = df_filtrado[[
-    "leilao",
     "categoria",
+    "ranking_na_categoria",
+    "plataforma",
+    "link",
     "preco_leilao",
     "preco_mercado",
     "desconto_percentual",
@@ -176,12 +195,13 @@ st.dataframe(
         "desconto_percentual": "{:.2f}",
         "score_reclamacoes": "{:.2f}",
         "score_custo_beneficio": "{:.2f}",
-        "score_final": "{:.2f}",
+        "score_feedback": "{:.2f}",
+        "score_final": "{:.2f}"
     }),
     use_container_width=True
 )
 
-st.subheader("Pesos do modelo")
+st.markdown("### Pesos do modelo")
 
 st.write({
     "Segurança": PESO_SEGURANCA,
@@ -189,3 +209,8 @@ st.write({
     "Reclamações": PESO_RECLAMACOES,
     "Feedback": PESO_FEEDBACK
 })
+
+st.info(
+    "O ranking é sempre relativo dentro de cada categoria "
+    "(imóveis, carros, motos, eletrônicos, salvados etc.)."
+)
