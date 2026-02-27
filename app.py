@@ -6,7 +6,7 @@ from datetime import datetime
 
 st.set_page_config(layout="wide")
 st.title("Scanner – Keltner + Regressão (slope) + ATR%")
-st.caption("Diário com confirmação semanal rígida | Long only | Apenas candle fechado")
+st.caption("Diário com filtro semanal simples (Close > EMA 169) | Long only | Candle fechado")
 
 # =====================================================
 # LISTAS DE ATIVOS
@@ -84,7 +84,7 @@ def preparar_indicadores(df):
 
     return df
 
-def sinal_setup(df):
+def sinal_setup_diario(df):
 
     cond1 = df["Close"] > df["EMA20"]
     cond2 = df["Close"].shift(1) <= df["EMA20"].shift(1)
@@ -97,7 +97,7 @@ def sinal_setup(df):
 # EXECUÇÃO
 # =====================================================
 
-st.write("Buscando sinais (diário + semanal rígido)...")
+st.write("Buscando sinais (diário + semanal acima da EMA 169)...")
 
 resultados = []
 
@@ -116,47 +116,47 @@ for i, ticker in enumerate(ativos):
 
         df.dropna(inplace=True)
 
-        # Remove candle do dia em formação (para quem opera à noite/sábado)
+        # Remove candle do dia em formação
         if df.index[-1].date() == datetime.today().date():
             df = df.iloc[:-1]
 
         # ======================
-        # Diário
+        # Diário – setup
         # ======================
 
         daily = preparar_indicadores(df)
-        sinal_diario = sinal_setup(daily)
+        sinal_diario = sinal_setup_diario(daily)
 
         # ======================
-        # Semanal (setup completo também)
+        # Semanal – apenas filtro Close > EMA 169
         # ======================
 
-        weekly = daily.resample("W-FRI").agg({
+        weekly = df.resample("W-FRI").agg({
             "Open": "first",
             "High": "max",
             "Low": "min",
             "Close": "last"
         })
 
-        weekly = preparar_indicadores(weekly)
-        sinal_semanal = sinal_setup(weekly)
+        weekly["EMA169"] = ema(weekly["Close"], 169)
 
-        # Alinha semanal ao diário
-        sinal_semanal_alinhado = sinal_semanal.reindex(daily.index, method="ffill")
+        filtro_semanal = weekly["Close"] > weekly["EMA169"]
+
+        filtro_semanal_alinhado = filtro_semanal.reindex(daily.index, method="ffill")
 
         # ======================
         # Sinal final
         # ======================
 
-        sinal_final = sinal_diario & sinal_semanal_alinhado
+        sinal_final = sinal_diario & filtro_semanal_alinhado
 
-        # verifica somente o último candle fechado
+        # Apenas último candle fechado
         if sinal_final.iloc[-1]:
 
             resultados.append({
                 "Ativo": ticker,
                 "Fechamento": round(daily["Close"].iloc[-1], 2),
-                "Slope": round(daily["SLOPE"].iloc[-1], 5),
+                "Slope": round(daily["SLOPE"].iloc[-1], 6),
                 "ATR%": round(daily["ATR_PCT"].iloc[-1], 2)
             })
 
@@ -166,10 +166,10 @@ for i, ticker in enumerate(ativos):
 barra.empty()
 
 if len(resultados) == 0:
-    st.warning("Nenhum ativo gerou sinal com confirmação semanal rígida.")
+    st.warning("Nenhum ativo gerou sinal com o filtro semanal (Close > EMA 169).")
     st.stop()
 
 df_res = pd.DataFrame(resultados)
 
-st.subheader("Ativos com sinal válido (diário + semanal rígido)")
+st.subheader("Ativos com sinal válido (diário + semanal acima da EMA 169)")
 st.dataframe(df_res, use_container_width=True)
