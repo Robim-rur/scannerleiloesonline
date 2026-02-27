@@ -2,11 +2,9 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("Scanner – Keltner + Regressão (slope) + ATR%")
-st.caption("Diário com filtro semanal simples (Close > EMA 169) | Long only | Candle fechado")
+st.title("Scanner – Keltner + Slope + EMA 169 | Diário + filtro semanal EMA 169 | Long only")
 
 # =====================================================
 # LISTAS DE ATIVOS
@@ -38,138 +36,119 @@ bdrs_fii = [
     "HGRE11.SA","MXRF11.SA","KNCR11.SA","KNIP11.SA","CPTS11.SA","IRDM11.SA"
 ]
 
-ativos = sorted(list(set(acoes_100 + bdrs_fii)))
+ativos = sorted(set(acoes_100 + bdrs_fii))
+
+# =====================================================
+# PARÂMETROS
+# =====================================================
+
+ema_period = 169
+keltner_period = 20
+keltner_mult = 2
+slope_period = 20
 
 # =====================================================
 # FUNÇÕES
 # =====================================================
 
-def ema(series, n):
-    return series.ewm(span=n, adjust=False).mean()
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
-def atr(df, n=10):
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"].shift(1)
+def atr(df, period=10):
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
 
-    tr = pd.concat([
-        high - low,
-        (high - close).abs(),
-        (low - close).abs()
-    ], axis=1).max(axis=1)
-
-    return tr.rolling(n).mean()
-
-def linear_slope(series, window=20):
-    slopes = [np.nan] * len(series)
+def linear_regression_slope(series, window):
+    slopes = [np.nan] * window
     for i in range(window, len(series)):
-        y = series.iloc[i-window:i].values
-        x = np.arange(len(y))
-        coef = np.polyfit(x, y, 1)[0]
-        slopes[i] = coef
+        y = series[i-window:i].values
+        x = np.arange(window)
+        slope, _ = np.polyfit(x, y, 1)
+        slopes.append(slope)
     return pd.Series(slopes, index=series.index)
 
-def preparar_indicadores(df):
-
-    df = df.copy()
-
-    df["EMA20"] = ema(df["Close"], 20)
-    df["ATR"] = atr(df, 10)
-
-    df["KC_UP"] = df["EMA20"] + 2 * df["ATR"]
-    df["KC_LO"] = df["EMA20"] - 2 * df["ATR"]
-
-    df["SLOPE"] = linear_slope(df["Close"], 20)
-    df["ATR_PCT"] = (df["ATR"] / df["Close"]) * 100
-
-    return df
-
-def sinal_setup_diario(df):
-
-    cond1 = df["Close"] > df["EMA20"]
-    cond2 = df["Close"].shift(1) <= df["EMA20"].shift(1)
-    cond3 = df["SLOPE"] > 0
-    cond4 = (df["ATR_PCT"] > 1) & (df["ATR_PCT"] < 8)
-
-    return cond1 & cond2 & cond3 & cond4
-
 # =====================================================
-# EXECUÇÃO
+# PROCESSAMENTO
 # =====================================================
 
-st.write("Buscando sinais (diário + semanal acima da EMA 169)...")
+resultado = []
 
-resultados = []
-
-barra = st.progress(0)
+progress = st.progress(0)
+total = len(ativos)
 
 for i, ticker in enumerate(ativos):
 
-    barra.progress((i + 1) / len(ativos))
-
     try:
+        # -----------------------
+        # Diário
+        # -----------------------
+        df = yf.download(ticker, period="18mo", interval="1d", progress=False)
 
-        df = yf.download(ticker, period="8y", interval="1d", progress=False)
-
-        if df.empty or len(df) < 300:
+        if df.empty or len(df) < 220:
             continue
 
-        df.dropna(inplace=True)
+        df["EMA169"] = ema(df["Close"], ema_period)
 
-        # Remove candle do dia em formação
-        if df.index[-1].date() == datetime.today().date():
-            df = df.iloc[:-1]
+        atr_k = atr(df, 10)
 
-        # ======================
-        # Diário – setup
-        # ======================
+        df["KC_Middle"] = ema(df["Close"], keltner_period)
+        df["KC_Upper"] = df["KC_Middle"] + keltner_mult * atr_k
+        df["KC_Lower"] = df["KC_Middle"] - keltner_mult * atr_k
 
-        daily = preparar_indicadores(df)
-        sinal_diario = sinal_setup_diario(daily)
+        df["Slope"] = linear_regression_slope(df["Close"], slope_period)
 
-        # ======================
-        # Semanal – apenas filtro Close > EMA 169
-        # ======================
+        d = df.iloc[-1]
 
-        weekly = df.resample("W-FRI").agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last"
-        })
+        # -----------------------
+        # Semanal
+        # -----------------------
+        dfw = yf.download(ticker, period="5y", interval="1wk", progress=False)
 
-        weekly["EMA169"] = ema(weekly["Close"], 169)
+        if dfw.empty or len(dfw) < 180:
+            continue
 
-        filtro_semanal = weekly["Close"] > weekly["EMA169"]
+        dfw["EMA169"] = ema(dfw["Close"], ema_period)
 
-        filtro_semanal_alinhado = filtro_semanal.reindex(daily.index, method="ffill")
+        w = dfw.iloc[-1]
 
-        # ======================
-        # Sinal final
-        # ======================
+        # -----------------------
+        # CONDIÇÕES
+        # -----------------------
 
-        sinal_final = sinal_diario & filtro_semanal_alinhado
+        cond_diario_ema = d["Close"] > d["EMA169"]
+        cond_keltner = d["Close"] > d["KC_Middle"]
+        cond_slope = d["Slope"] > 0
 
-        # Apenas último candle fechado
-        if sinal_final.iloc[-1]:
+        cond_semanal = w["Close"] > w["EMA169"]
 
-            resultados.append({
-                "Ativo": ticker,
-                "Fechamento": round(daily["Close"].iloc[-1], 2),
-                "Slope": round(daily["SLOPE"].iloc[-1], 6),
-                "ATR%": round(daily["ATR_PCT"].iloc[-1], 2)
+        if cond_diario_ema and cond_keltner and cond_slope and cond_semanal:
+
+            resultado.append({
+                "Ativo": ticker.replace(".SA",""),
+                "Fechamento": round(d["Close"], 2),
+                "EMA169 (D)": round(d["EMA169"], 2),
+                "Keltner médio": round(d["KC_Middle"], 2),
+                "Slope": round(d["Slope"], 5),
+                "Fech. semanal": round(w["Close"], 2),
+                "EMA169 (W)": round(w["EMA169"], 2)
             })
 
-    except Exception:
-        continue
+    except:
+        pass
 
-barra.empty()
+    progress.progress((i + 1) / total)
 
-if len(resultados) == 0:
-    st.warning("Nenhum ativo gerou sinal com o filtro semanal (Close > EMA 169).")
-    st.stop()
+# =====================================================
+# RESULTADO
+# =====================================================
 
-df_res = pd.DataFrame(resultados)
+st.subheader("Ativos aprovados – Keltner + Slope + EMA169 (D) com filtro EMA169 (W)")
 
-st.subheader("Ativos com sinal válido (diário + semanal acima da EMA 169)")
-st.dataframe(df_res, use_container_width=True)
+if len(resultado) == 0:
+    st.warning("Nenhum ativo passou no setup hoje.")
+else:
+    df_res = pd.DataFrame(resultado).sort_values(by="Slope", ascending=False)
+    st.dataframe(df_res, use_container_width=True)
