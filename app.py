@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(layout="wide")
-st.title("Scanner – Keltner + Slope + EMA 169 | Diário + filtro semanal EMA 169 | Long only")
+st.title("Scanner – Golden Cross semanal (evento) | Probabilidade de +20% antes de -10%")
 
 # =====================================================
 # LISTAS DE ATIVOS
@@ -39,116 +39,159 @@ bdrs_fii = [
 ativos = sorted(set(acoes_100 + bdrs_fii))
 
 # =====================================================
-# PARÂMETROS
+# PARÂMETROS DO ESTUDO
 # =====================================================
 
-ema_period = 169
-keltner_period = 20
-keltner_mult = 2
-slope_period = 20
+GAIN = 0.20
+LOSS = 0.10
 
 # =====================================================
 # FUNÇÕES
 # =====================================================
 
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
+def ema(series, p):
+    return series.ewm(span=p, adjust=False).mean()
 
-def atr(df, period=10):
-    high_low = df["High"] - df["Low"]
-    high_close = np.abs(df["High"] - df["Close"].shift())
-    low_close = np.abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+def proximo_pregao(df_daily, data_evento):
+    futuros = df_daily[df_daily.index > data_evento]
+    if len(futuros) == 0:
+        return None
+    return futuros.index[0]
 
-def linear_regression_slope(series, window):
-    slopes = [np.nan] * window
-    for i in range(window, len(series)):
-        y = series[i-window:i].values
-        x = np.arange(window)
-        slope, _ = np.polyfit(x, y, 1)
-        slopes.append(slope)
-    return pd.Series(slopes, index=series.index)
+def simular_trade(df_daily, data_entrada, preco_entrada):
+
+    alvo = preco_entrada * (1 + GAIN)
+    stop = preco_entrada * (1 - LOSS)
+
+    sub = df_daily[df_daily.index >= data_entrada]
+
+    for i, row in sub.iterrows():
+
+        if row["Low"] <= stop:
+            dias = (i - data_entrada).days
+            return "loss", dias
+
+        if row["High"] >= alvo:
+            dias = (i - data_entrada).days
+            return "gain", dias
+
+    return None, None
+
 
 # =====================================================
 # PROCESSAMENTO
 # =====================================================
 
 resultado = []
-
 progress = st.progress(0)
-total = len(ativos)
 
-for i, ticker in enumerate(ativos):
+for idx, ticker in enumerate(ativos):
 
     try:
-        # -----------------------
-        # Diário
-        # -----------------------
-        df = yf.download(ticker, period="18mo", interval="1d", progress=False)
+        dfw = yf.download(ticker, period="15y", interval="1wk", progress=False)
+        dfd = yf.download(ticker, period="15y", interval="1d", progress=False)
 
-        if df.empty or len(df) < 220:
+        if dfw.empty or dfd.empty:
             continue
 
-        df["EMA169"] = ema(df["Close"], ema_period)
+        # remove candle semanal em formação
+        dfw = dfw.iloc[:-1]
 
-        atr_k = atr(df, 10)
+        dfw["EMA50"] = ema(dfw["Close"], 50)
+        dfw["EMA200"] = ema(dfw["Close"], 200)
 
-        df["KC_Middle"] = ema(df["Close"], keltner_period)
-        df["KC_Upper"] = df["KC_Middle"] + keltner_mult * atr_k
-        df["KC_Lower"] = df["KC_Middle"] - keltner_mult * atr_k
+        eventos = []
 
-        df["Slope"] = linear_regression_slope(df["Close"], slope_period)
+        for i in range(1, len(dfw)):
+            ant = dfw.iloc[i - 1]
+            atual = dfw.iloc[i]
 
-        d = df.iloc[-1]
+            if ant["EMA50"] <= ant["EMA200"] and atual["EMA50"] > atual["EMA200"]:
+                eventos.append(dfw.index[i])
 
-        # -----------------------
-        # Semanal
-        # -----------------------
-        dfw = yf.download(ticker, period="5y", interval="1wk", progress=False)
-
-        if dfw.empty or len(dfw) < 180:
+        if len(eventos) < 3:
             continue
 
-        dfw["EMA169"] = ema(dfw["Close"], ema_period)
+        ganhos = 0
+        perdas = 0
+        tempos = []
 
-        w = dfw.iloc[-1]
+        for data_evt in eventos:
 
-        # -----------------------
-        # CONDIÇÕES
-        # -----------------------
+            prox = proximo_pregao(dfd, data_evt)
+            if prox is None:
+                continue
 
-        cond_diario_ema = d["Close"] > d["EMA169"]
-        cond_keltner = d["Close"] > d["KC_Middle"]
-        cond_slope = d["Slope"] > 0
+            preco_entrada = float(dfd.loc[prox]["Open"])
 
-        cond_semanal = w["Close"] > w["EMA169"]
+            resultado_trade, dias = simular_trade(
+                dfd, prox, preco_entrada
+            )
 
-        if cond_diario_ema and cond_keltner and cond_slope and cond_semanal:
+            if resultado_trade == "gain":
+                ganhos += 1
+                tempos.append(dias)
 
-            resultado.append({
-                "Ativo": ticker.replace(".SA",""),
-                "Fechamento": round(d["Close"], 2),
-                "EMA169 (D)": round(d["EMA169"], 2),
-                "Keltner médio": round(d["KC_Middle"], 2),
-                "Slope": round(d["Slope"], 5),
-                "Fech. semanal": round(w["Close"], 2),
-                "EMA169 (W)": round(w["EMA169"], 2)
-            })
+            elif resultado_trade == "loss":
+                perdas += 1
+                tempos.append(dias)
+
+        total = ganhos + perdas
+
+        if total < 3:
+            continue
+
+        prob = ganhos / total
+        expect = (prob * GAIN) - ((1 - prob) * LOSS)
+
+        # -------------------------------------------------
+        # evento precisa ter ocorrido na ÚLTIMA semana fechada
+        # -------------------------------------------------
+
+        pen = dfw.iloc[-2]
+        ult = dfw.iloc[-1]
+
+        evento_atual = pen["EMA50"] <= pen["EMA200"] and ult["EMA50"] > ult["EMA200"]
+
+        if not evento_atual:
+            continue
+
+        data_evento_atual = dfw.index[-1]
+
+        prox = proximo_pregao(dfd, data_evento_atual)
+        if prox is None:
+            continue
+
+        entrada_atual = float(dfd.loc[prox]["Open"])
+
+        resultado.append({
+            "Ativo": ticker.replace(".SA",""),
+            "Entrada": round(entrada_atual, 2),
+            "Data do evento": data_evento_atual.date(),
+            "Probabilidade gain antes do loss (%)": round(prob * 100, 2),
+            "Amostras": total,
+            "Expectância": round(expect * 100, 2),
+            "Tempo médio até desfecho (dias)": round(np.mean(tempos), 1)
+        })
 
     except:
         pass
 
-    progress.progress((i + 1) / total)
+    progress.progress((idx + 1) / len(ativos))
+
 
 # =====================================================
-# RESULTADO
+# SAÍDA
 # =====================================================
 
-st.subheader("Ativos aprovados – Keltner + Slope + EMA169 (D) com filtro EMA169 (W)")
+st.subheader("Golden Cross semanal (evento) – Ranking")
 
 if len(resultado) == 0:
-    st.warning("Nenhum ativo passou no setup hoje.")
+    st.warning("Nenhum ativo com Golden Cross semanal como evento no último fechamento.")
 else:
-    df_res = pd.DataFrame(resultado).sort_values(by="Slope", ascending=False)
+    df_res = pd.DataFrame(resultado)
+    df_res = df_res.sort_values(
+        by="Probabilidade gain antes do loss (%)",
+        ascending=False
+    )
     st.dataframe(df_res, use_container_width=True)
