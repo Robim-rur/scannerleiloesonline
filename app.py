@@ -1,38 +1,38 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-import os
+from pathlib import Path
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Ranking de Leilões Online - Brasil", layout="wide")
 
-st.title("Ranking de Leilões – Brasil")
-st.caption("Top 10 por modalidade – classificação risco x retorno")
+st.title("Ranking de Leilões Online – Classificação por Categoria")
 
-ARQUIVO = "dados_leiloes.csv"
+# ============================================================
+# CAMINHO GARANTIDO NA MESMA PASTA DO app.py
+# ============================================================
 
-# =====================================================
-# PESOS DO MODELO
-# =====================================================
+BASE_DIR = Path(__file__).resolve().parent
+CSV_PATH = BASE_DIR / "dados_leiloes.csv"
 
-PESO_SEGURANCA = 0.40
-PESO_CUSTO_BENEFICIO = 0.30
-PESO_RECLAMACOES = 0.20
-PESO_FEEDBACK = 0.10
-
-
-# =====================================================
+# ============================================================
 # CRIA CSV DE EXEMPLO SE NÃO EXISTIR
-# =====================================================
+# ============================================================
 
-def criar_csv_exemplo():
-
+def criar_csv_exemplo(caminho):
     dados = [
-        ["Plataforma Teste 1", "https://exemplo.com", "Veículos", 38000, 52000, 9.0, 10, 8.5],
-        ["Plataforma Teste 2", "https://exemplo.com", "Veículos", 41000, 54000, 8.7, 12, 8.0],
-        ["Plataforma Teste 3", "https://exemplo.com", "Imóveis", 280000, 380000, 9.3, 4, 8.8],
-        ["Plataforma Teste 4", "https://exemplo.com", "Imóveis", 310000, 420000, 9.1, 6, 8.6],
-        ["Plataforma Teste 5", "https://exemplo.com", "Mercadorias", 1200, 2400, 8.5, 8, 7.9],
-        ["Plataforma Teste 6", "https://exemplo.com", "Mercadorias", 900, 1800, 8.2, 11, 7.5],
+        # ---------------- IMÓVEIS ----------------
+        ["Zukerman", "https://exemplo.com/imovel1", "Imóveis", 180000, 230000, 8.5, 12, 8.0],
+        ["Mega Leilões", "https://exemplo.com/imovel2", "Imóveis", 210000, 260000, 9.0, 9, 8.6],
+        ["Leilão Santander", "https://exemplo.com/imovel3", "Imóveis", 195000, 250000, 8.8, 7, 8.4],
+
+        # ---------------- VEÍCULOS ----------------
+        ["Sodré Santoro", "https://exemplo.com/carro1", "Veículos", 42000, 52000, 8.9, 18, 8.1],
+        ["Copart", "https://exemplo.com/carro2", "Veículos", 38000, 50000, 8.3, 22, 7.8],
+        ["Superbid", "https://exemplo.com/moto1", "Veículos", 12000, 17000, 8.6, 10, 8.2],
+
+        # ---------------- MERCADORIAS ----------------
+        ["Receita Federal", "https://exemplo.com/mercadoria1", "Mercadorias", 4500, 8500, 9.2, 5, 8.7],
+        ["Sold Leilões", "https://exemplo.com/mercadoria2", "Mercadorias", 2800, 6000, 8.4, 11, 7.9],
+        ["Leilão Judicial Brasil", "https://exemplo.com/mercadoria3", "Mercadorias", 1500, 4000, 8.0, 14, 7.5],
     ]
 
     colunas = [
@@ -47,44 +47,32 @@ def criar_csv_exemplo():
     ]
 
     df = pd.DataFrame(dados, columns=colunas)
-    df.to_csv(ARQUIVO, index=False, encoding="utf-8")
+    df.to_csv(caminho, index=False, encoding="utf-8-sig")
 
 
-# =====================================================
-# GARANTE QUE O CSV EXISTA
-# =====================================================
-
-if not os.path.exists(ARQUIVO):
-    criar_csv_exemplo()
+if not CSV_PATH.exists():
+    criar_csv_exemplo(CSV_PATH)
     st.warning(
         "Arquivo dados_leiloes.csv não existia. "
-        "Um arquivo de exemplo foi criado automaticamente na pasta do projeto. "
+        "Um arquivo de exemplo foi criado automaticamente na pasta do projeto.\n\n"
         "Depois substitua o conteúdo pelos seus leilões reais."
     )
 
-
-# =====================================================
+# ============================================================
 # CARREGAMENTO
-# =====================================================
-
-@st.cache_data
-def carregar_base():
-    return pd.read_csv(ARQUIVO)
-
+# ============================================================
 
 try:
-    df = carregar_base()
+    df = pd.read_csv(CSV_PATH)
 except Exception as e:
-    st.error("Falha ao abrir o arquivo dados_leiloes.csv")
-    st.write(e)
+    st.error(f"Erro ao carregar dados_leiloes.csv: {e}")
     st.stop()
 
-
-# =====================================================
+# ============================================================
 # VALIDAÇÃO DE COLUNAS
-# =====================================================
+# ============================================================
 
-colunas_obrigatorias = [
+colunas_necessarias = [
     "plataforma",
     "link",
     "categoria",
@@ -95,218 +83,123 @@ colunas_obrigatorias = [
     "score_feedback"
 ]
 
-faltando = [c for c in colunas_obrigatorias if c not in df.columns]
+faltando = [c for c in colunas_necessarias if c not in df.columns]
 
 if faltando:
-    st.error("Colunas obrigatórias ausentes no CSV:")
-    st.write(faltando)
+    st.error(f"Colunas obrigatórias ausentes no CSV: {faltando}")
     st.stop()
 
-
-# =====================================================
-# LIMPEZA BÁSICA
-# =====================================================
-
-df = df.copy()
+# ============================================================
+# LIMPEZA E NORMALIZAÇÃO
+# ============================================================
 
 df["categoria"] = df["categoria"].astype(str).str.strip()
 
-mapa = {
-    "Veiculos": "Veículos",
-    "veiculos": "Veículos",
-    "veículo": "Veículos",
-    "veiculo": "Veículos",
-    "imovel": "Imóveis",
-    "imoveis": "Imóveis",
-    "mercadoria": "Mercadorias",
-    "mercadorias": "Mercadorias"
-}
+df["preco_leilao"] = pd.to_numeric(df["preco_leilao"], errors="coerce")
+df["preco_mercado"] = pd.to_numeric(df["preco_mercado"], errors="coerce")
+df["score_seguranca"] = pd.to_numeric(df["score_seguranca"], errors="coerce")
+df["reclamacoes_pos_compra"] = pd.to_numeric(df["reclamacoes_pos_compra"], errors="coerce")
+df["score_feedback"] = pd.to_numeric(df["score_feedback"], errors="coerce")
 
-df["categoria"] = df["categoria"].replace(mapa)
+df = df.dropna()
 
+# ============================================================
+# MÉTRICAS DO MODELO
+# ============================================================
 
-# =====================================================
-# FUNÇÕES ECONÔMICAS
-# =====================================================
+# custo-benefício
+df["beneficio"] = (df["preco_mercado"] - df["preco_leilao"]) / df["preco_mercado"]
 
-def calcular_desconto(preco_leilao, preco_mercado):
+# inversão de reclamações
+df["reclamacoes_invertido"] = 1 / (1 + df["reclamacoes_pos_compra"])
 
-    try:
-        preco_leilao = float(preco_leilao)
-        preco_mercado = float(preco_mercado)
-    except:
-        return 0.0
+# normalização simples
+def normalizar(col):
+    return (col - col.min()) / (col.max() - col.min()) if col.max() != col.min() else 0.5
 
-    if preco_mercado <= 0:
-        return 0.0
+df["n_beneficio"] = normalizar(df["beneficio"])
+df["n_seguranca"] = normalizar(df["score_seguranca"])
+df["n_feedback"] = normalizar(df["score_feedback"])
+df["n_reclamacoes"] = normalizar(df["reclamacoes_invertido"])
 
-    return (preco_mercado - preco_leilao) / preco_mercado * 100.0
+# ============================================================
+# SCORE FINAL
+# ============================================================
 
+df["score_final"] = (
+      0.35 * df["n_seguranca"]
+    + 0.30 * df["n_beneficio"]
+    + 0.20 * df["n_reclamacoes"]
+    + 0.15 * df["n_feedback"]
+)
 
-def normalizar_desconto(desconto, referencia=60.0):
+# ============================================================
+# CONTADOR DE LEILÕES POR CATEGORIA
+# ============================================================
 
-    if desconto <= 0:
-        return 0.0
+st.subheader("Quantidade de leilões analisados por categoria")
 
-    score = (desconto / referencia) * 10.0
-    return max(0.0, min(score, 10.0))
+contagem = df["categoria"].value_counts().reset_index()
+contagem.columns = ["Categoria", "Quantidade"]
 
+st.dataframe(contagem, use_container_width=True)
 
-def normalizar_reclamacoes(qtd, max_ref=50):
+# ============================================================
+# FILTRO DE CATEGORIAS VÁLIDAS
+# ============================================================
 
-    try:
-        qtd = float(qtd)
-    except:
-        qtd = max_ref
+categorias_validas = ["Imóveis", "Veículos", "Mercadorias"]
 
-    score = 10.0 * (1.0 - min(qtd, max_ref) / max_ref)
-    return max(0.0, score)
+df = df[df["categoria"].isin(categorias_validas)]
 
+# ============================================================
+# RANKING TOP 10 POR CATEGORIA
+# ============================================================
 
-def calcular_score_final(linha):
+st.subheader("Ranking TOP 10 por categoria")
 
-    score_cb = normalizar_desconto(linha["desconto_percentual"])
-    score_rec = normalizar_reclamacoes(linha["reclamacoes_pos_compra"])
+for categoria in categorias_validas:
 
-    return (
-        linha["score_seguranca"] * PESO_SEGURANCA +
-        score_cb * PESO_CUSTO_BENEFICIO +
-        score_rec * PESO_RECLAMACOES +
-        linha["score_feedback"] * PESO_FEEDBACK
+    st.markdown(f"## {categoria}")
+
+    base = df[df["categoria"] == categoria].copy()
+
+    if base.empty:
+        st.info("Nenhum leilão encontrado para esta categoria.")
+        continue
+
+    ranking = (
+        base
+        .sort_values("score_final", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
     )
 
+    ranking.insert(0, "Ranking", ranking.index + 1)
 
-# =====================================================
-# CÁLCULOS
-# =====================================================
+    st.dataframe(
+        ranking[
+            [
+                "Ranking",
+                "plataforma",
+                "link",
+                "preco_leilao",
+                "preco_mercado",
+                "score_seguranca",
+                "reclamacoes_pos_compra",
+                "score_feedback",
+                "beneficio",
+                "score_final"
+            ]
+        ],
+        use_container_width=True
+    )
 
-df["desconto_percentual"] = df.apply(
-    lambda x: calcular_desconto(x["preco_leilao"], x["preco_mercado"]),
-    axis=1
-)
-
-df["score_custo_beneficio"] = df["desconto_percentual"].apply(normalizar_desconto)
-df["score_reclamacoes"] = df["reclamacoes_pos_compra"].apply(normalizar_reclamacoes)
-
-df["score_final"] = df.apply(calcular_score_final, axis=1)
-
-
-# =====================================================
-# FILTROS
-# =====================================================
-
-st.sidebar.header("Filtros")
-
-categorias = sorted(df["categoria"].dropna().unique().tolist())
-
-categorias_sel = st.sidebar.multiselect(
-    "Modalidades",
-    categorias,
-    default=categorias
-)
-
-df = df[df["categoria"].isin(categorias_sel)].copy()
-
-
-# =====================================================
-# RANKING
-# =====================================================
-
-df = df.sort_values(
-    ["categoria", "score_final"],
-    ascending=[True, False]
-)
-
-df["ranking"] = (
-    df.groupby("categoria")["score_final"]
-      .rank(method="dense", ascending=False)
-      .astype(int)
-)
-
-
-# =====================================================
-# TOP 10 POR MODALIDADE
-# =====================================================
-
-df_top10 = (
-    df.sort_values(["categoria", "ranking"])
-      .groupby("categoria", group_keys=False)
-      .head(10)
-)
-
-
-# =====================================================
-# EXIBIÇÃO
-# =====================================================
-
-st.subheader("Top 10 melhores leilões por modalidade")
-
-st.caption(
-    f"Atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
-    f"Total de leilões analisados: {len(df)}"
-)
-
-tabela = df_top10[
-    [
-        "categoria",
-        "ranking",
-        "plataforma",
-        "link",
-        "preco_leilao",
-        "preco_mercado",
-        "desconto_percentual",
-        "score_seguranca",
-        "reclamacoes_pos_compra",
-        "score_reclamacoes",
-        "score_custo_beneficio",
-        "score_feedback",
-        "score_final"
-    ]
-]
-
-st.dataframe(
-    tabela.style.format({
-        "preco_leilao": "R$ {:,.2f}",
-        "preco_mercado": "R$ {:,.2f}",
-        "desconto_percentual": "{:.2f}",
-        "score_reclamacoes": "{:.2f}",
-        "score_custo_beneficio": "{:.2f}",
-        "score_feedback": "{:.2f}",
-        "score_final": "{:.2f}"
-    }),
-    use_container_width=True
-)
-
-
-# =====================================================
-# RESUMO
-# =====================================================
-
-st.subheader("Quantidade de leilões analisados por modalidade")
-
-resumo = (
-    df.groupby("categoria")
-      .size()
-      .reset_index(name="qtde_leiloes")
-)
-
-st.dataframe(resumo, use_container_width=True)
-
-
-# =====================================================
-# INFORMAÇÕES DO MODELO
-# =====================================================
-
-st.markdown("### Pesos do modelo")
-
-st.write({
-    "Segurança": PESO_SEGURANCA,
-    "Custo-benefício": PESO_CUSTO_BENEFICIO,
-    "Reclamações pós-compra": PESO_RECLAMACOES,
-    "Feedback": PESO_FEEDBACK
-})
+# ============================================================
+# ALERTA DE AMOSTRA
+# ============================================================
 
 st.info(
-    "Cada linha do CSV representa um leilão (lote). "
-    "O ranking é sempre relativo dentro da própria modalidade."
+    "Para obter rankings confiáveis, recomenda-se no mínimo 30 leilões por categoria.\n"
+    "O número efetivamente analisado aparece na tabela de contagem acima."
 )
