@@ -5,25 +5,17 @@ from duckduckgo_search import DDGS
 
 st.set_page_config(layout="wide")
 
-st.title("Scanner de Leilões no Brasil – Ranking por Categoria")
+st.title("Ranking de Leilões de Mercadorias – Brasil")
 
-categorias = {
-    "Imóveis": [
-        "leilão de imóveis extrajudicial site leilão Brasil",
-        "leilão de imóveis caixa site leilão",
-        "leilão judicial de imóveis site oficial"
-    ],
-    "Veículos": [
-        "leilão de carros site oficial leilão Brasil",
-        "leilão de veículos recuperados site leilão",
-        "leilão de motos site leilão Brasil"
-    ],
-    "Mercadorias": [
-        "leilão de mercadorias ferramentas eletrodomésticos site leilão",
-        "leilão de bens diversos eletrônicos site leilão Brasil",
-        "leilão de produtos apreendidos mercadorias site leilão"
-    ]
-}
+st.caption("Categoria analisada: mercadorias diversas (ferramentas, eletrodomésticos, eletrônicos, bens móveis em geral)")
+
+consultas = [
+    "leilão de mercadorias ferramentas eletrodomésticos site leilão Brasil",
+    "leilão de bens diversos eletrônicos ferramentas site leilão",
+    "leilão de produtos apreendidos mercadorias site oficial leilão",
+    "leilão de equipamentos ferramentas industriais site leilão",
+    "leilão de bens móveis mercadorias site leilão Brasil"
+]
 
 
 def extrair_preco(texto):
@@ -42,7 +34,8 @@ def extrair_preco(texto):
         return None
 
 
-def buscar_links(categoria, consultas, minimo=30):
+def buscar_leiloes_mercadorias(minimo=30):
+
     resultados = []
 
     with DDGS() as ddgs:
@@ -57,90 +50,83 @@ def buscar_links(categoria, consultas, minimo=30):
 
                 for r in achados:
                     resultados.append({
-                        "categoria": categoria,
                         "titulo": r.get("title"),
                         "link": r.get("href"),
                         "descricao": r.get("body")
                     })
 
-            except Exception as e:
-                st.warning(f"Falha na busca: {consulta}")
+            except Exception:
+                pass
+
+    if not resultados:
+        return pd.DataFrame()
 
     df = pd.DataFrame(resultados)
 
-    if df.empty:
-        return df
-
     df = df.drop_duplicates(subset=["link"])
 
+    # tenta garantir pelo menos 30 analisados
     return df.head(minimo * 2)
 
 
-def classificar_leiloes(df):
-    if df.empty:
-        return df
+def classificar(df):
 
     df["preco_encontrado"] = df["descricao"].apply(extrair_preco)
 
-    df["score"] = 0
+    df["score"] = 0.0
 
-    # Critérios simples e objetivos (proxy de qualidade)
-    df["score"] += df["titulo"].str.len().fillna(0).apply(lambda x: min(x, 60)) * 0.05
-    df["score"] += df["descricao"].str.len().fillna(0).apply(lambda x: min(x, 300)) * 0.01
+    # qualidade de título
+    df["score"] += df["titulo"].fillna("").str.len().apply(lambda x: min(x, 80)) * 0.04
 
-    # bônus se aparenta ser site institucional de leilão
+    # qualidade de descrição
+    df["score"] += df["descricao"].fillna("").str.len().apply(lambda x: min(x, 400)) * 0.01
+
+    # bônus para portais típicos de leilão
     df["score"] += df["link"].str.contains(
-        "leil|judicial|caixa|oficial|banco|recupera|alien",
+        "leil|judicial|oficial|banco|caixa|alien|recupera|patrimonio|apreendid",
         case=False,
         na=False
-    ).astype(int) * 3
+    ).astype(int) * 3.0
 
-    # leve penalidade se parecer marketplace comum
+    # penalidade para marketplaces comuns
     df["score"] -= df["link"].str.contains(
-        "mercado|olx|amazon|shopee",
+        "mercadolivre|olx|amazon|shopee|magazineluiza|casasbahia|americanas",
         case=False,
         na=False
-    ).astype(int) * 5
+    ).astype(int) * 6.0
+
+    # pequeno bônus se existir valor no texto
+    df["score"] += df["preco_encontrado"].notna().astype(int) * 1.0
 
     return df.sort_values("score", ascending=False)
 
 
-st.info("Buscando leilões públicos na internet. Aguarde alguns segundos...")
+st.info("Buscando leilões de mercadorias no Brasil. Aguarde...")
 
-resultado_final = {}
+base = buscar_leiloes_mercadorias(minimo=30)
 
-for categoria, consultas in categorias.items():
+if base.empty:
 
-    st.subheader(f"Categoria: {categoria}")
+    st.error("Não foi possível coletar resultados no momento.")
 
-    base = buscar_links(categoria, consultas, minimo=30)
+else:
 
-    if base.empty:
-        st.error(f"Nenhum resultado encontrado para {categoria}.")
-        continue
+    base_classificada = classificar(base)
 
-    base_classificada = classificar_leiloes(base)
-
-    # Garante análise mínima de 30 registros (quando houver)
     analisados = base_classificada.head(30)
 
     top10 = analisados.head(10)
 
-    resultado_final[categoria] = top10
+    st.subheader("Resultado final – TOP 10 leilões de mercadorias")
 
-    st.caption(f"Total analisado: {len(analisados)} leilões")
+    st.caption(f"Total de leilões analisados: {len(analisados)}")
 
     tabela = top10[["titulo", "link", "score"]].copy()
     tabela["score"] = tabela["score"].round(2)
 
-    st.dataframe(
-        tabela,
-        use_container_width=True
-    )
+    st.dataframe(tabela, use_container_width=True)
 
+    st.subheader("Links diretos dos 10 melhores")
 
-if not resultado_final:
-    st.warning(
-        "Não foi possível coletar resultados no momento. "
-        "Isso normalmente ocorre por bloqueio temporário do buscador."
-    )
+    for i, row in top10.iterrows():
+        st.markdown(f"- [{row['titulo']}]({row['link']})")
