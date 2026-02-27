@@ -1,132 +1,156 @@
 import streamlit as st
 import pandas as pd
-import re
-from duckduckgo_search import DDGS
+from urllib.parse import urlparse
 
 st.set_page_config(layout="wide")
 
-st.title("Ranking de Leilões de Mercadorias – Brasil")
+st.title("Ranking – Leilões de Mercadorias no Brasil")
+st.caption("Classificação automática de plataformas de leilão de mercadorias, bens diversos, ferramentas e eletrodomésticos.")
 
-st.caption("Categoria analisada: mercadorias diversas (ferramentas, eletrodomésticos, eletrônicos, bens móveis em geral)")
+# ----------------------------------------------------------------------
+# BASE FIXA DE PLATAFORMAS QUE ATUAM COM MERCADORIAS NO BRASIL
+# (bens móveis, ferramentas, eletrônicos, apreendidos, recuperados etc.)
+# ----------------------------------------------------------------------
 
-consultas = [
-    "leilão de mercadorias ferramentas eletrodomésticos site leilão Brasil",
-    "leilão de bens diversos eletrônicos ferramentas site leilão",
-    "leilão de produtos apreendidos mercadorias site oficial leilão",
-    "leilão de equipamentos ferramentas industriais site leilão",
-    "leilão de bens móveis mercadorias site leilão Brasil"
+dados = [
+    ("Superbid", "https://www.superbid.net"),
+    ("Sold Leilões", "https://www.sold.com.br"),
+    ("Zukerman Leilões", "https://www.zukerman.com.br"),
+    ("Sato Leilões", "https://www.satoleiloes.com.br"),
+    ("Mega Leilões", "https://www.megaleiloes.com.br"),
+    ("Leilão Vip", "https://www.leilaovip.com.br"),
+    ("Freitas Leiloeiro", "https://www.freitasleiloeiro.com.br"),
+    ("Fidalgo Leilões", "https://www.fidalgoleiloes.com.br"),
+    ("Positivo Leilões", "https://www.positivoleiloes.com.br"),
+    ("Copart Brasil", "https://www.copart.com.br"),
+    ("Banco do Brasil Leilões", "https://www.leiloesbb.com.br"),
+    ("Santander Leilões", "https://www.santanderimoveis.com.br"),
+    ("Caixa Leilões", "https://venda-imoveis.caixa.gov.br"),
+    ("Bradesco Leilões", "https://www.bradescoimoveis.com.br"),
+    ("Itaú Leilões", "https://www.itau.com.br/imoveis"),
+    ("Leilões Judiciais Brasil", "https://www.leiloesjudiciais.com.br"),
+    ("Leilões BR", "https://www.leiloesbr.com.br"),
+    ("Leilão Seguro", "https://www.leilaoseguro.com.br"),
+    ("VIP Direto", "https://www.vipdireto.com.br"),
+    ("Top Leilões", "https://www.topleiloes.com.br"),
+    ("Leilão Fácil", "https://www.leilaofacil.com.br"),
+    ("Lance Certo Leilões", "https://www.lancecertoleiloes.com.br"),
+    ("Renato Salles Leiloeiro", "https://www.renatosalles.com.br"),
+    ("Hasta Leilões", "https://www.hastaleiloes.com.br"),
+    ("Kleber Leilões", "https://www.kleberleiloes.com.br"),
+    ("Leilão Total", "https://www.leilaototal.com.br"),
+    ("Portal Hasta", "https://www.portalhasta.com.br"),
+    ("RJM Leilões", "https://www.rjmleiloes.com.br"),
+    ("Pestana Leilões", "https://www.pestanaleiloes.com.br"),
+    ("D1 Leilões", "https://www.d1leiloes.com.br"),
+    ("MGL Leilões", "https://www.mgl.com.br"),
+    ("João Emílio Leiloeiro", "https://www.joaoemilio.com.br"),
+    ("Alfa Leilões", "https://www.alfaleiloes.com.br"),
+    ("Nordeste Leilões", "https://www.nordesteleiloes.com.br"),
+    ("Sul Leilões", "https://www.sulleiloes.com.br")
 ]
 
+# ----------------------------------------------------------------------
 
-def extrair_preco(texto):
-    if not texto:
-        return None
+df = pd.DataFrame(dados, columns=["plataforma", "link"])
 
-    texto = texto.replace(".", "").replace(",", ".")
-    valores = re.findall(r'R\$ ?\d+\.?\d*', texto)
+# ----------------------------------------------------------------------
+# Heurísticas objetivas de classificação
+# ----------------------------------------------------------------------
 
-    if not valores:
-        return None
+def score_seguranca(url):
+    score = 0
 
-    try:
-        return float(valores[0].replace("R$", "").strip())
-    except:
-        return None
+    if url.startswith("https://"):
+        score += 3
 
+    dominio = urlparse(url).netloc.lower()
 
-def buscar_leiloes_mercadorias(minimo=30):
+    if any(p in dominio for p in ["banco", "bb", "caixa", "itau", "bradesco", "santander"]):
+        score += 3
 
-    resultados = []
+    if any(p in dominio for p in ["leil", "leiloes", "hasta"]):
+        score += 2
 
-    with DDGS() as ddgs:
-        for consulta in consultas:
-            try:
-                achados = ddgs.text(
-                    consulta,
-                    region="br-pt",
-                    safesearch="moderate",
-                    max_results=50
-                )
-
-                for r in achados:
-                    resultados.append({
-                        "titulo": r.get("title"),
-                        "link": r.get("href"),
-                        "descricao": r.get("body")
-                    })
-
-            except Exception:
-                pass
-
-    if not resultados:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(resultados)
-
-    df = df.drop_duplicates(subset=["link"])
-
-    # tenta garantir pelo menos 30 analisados
-    return df.head(minimo * 2)
+    return score
 
 
-def classificar(df):
+def score_confiabilidade(url):
+    dominio = urlparse(url).netloc.lower()
 
-    df["preco_encontrado"] = df["descricao"].apply(extrair_preco)
+    score = 0
 
-    df["score"] = 0.0
+    if ".gov.br" in dominio:
+        score += 4
 
-    # qualidade de título
-    df["score"] += df["titulo"].fillna("").str.len().apply(lambda x: min(x, 80)) * 0.04
+    if any(p in dominio for p in ["superbid", "sold", "zukerman", "sato", "mega", "vip"]):
+        score += 3
 
-    # qualidade de descrição
-    df["score"] += df["descricao"].fillna("").str.len().apply(lambda x: min(x, 400)) * 0.01
-
-    # bônus para portais típicos de leilão
-    df["score"] += df["link"].str.contains(
-        "leil|judicial|oficial|banco|caixa|alien|recupera|patrimonio|apreendid",
-        case=False,
-        na=False
-    ).astype(int) * 3.0
-
-    # penalidade para marketplaces comuns
-    df["score"] -= df["link"].str.contains(
-        "mercadolivre|olx|amazon|shopee|magazineluiza|casasbahia|americanas",
-        case=False,
-        na=False
-    ).astype(int) * 6.0
-
-    # pequeno bônus se existir valor no texto
-    df["score"] += df["preco_encontrado"].notna().astype(int) * 1.0
-
-    return df.sort_values("score", ascending=False)
+    return score
 
 
-st.info("Buscando leilões de mercadorias no Brasil. Aguarde...")
+def score_pos_compra(url):
+    dominio = urlparse(url).netloc.lower()
 
-base = buscar_leiloes_mercadorias(minimo=30)
+    score = 2
 
-if base.empty:
+    if any(p in dominio for p in ["banco", "bb", "caixa", "itau", "bradesco", "santander"]):
+        score += 2
 
-    st.error("Não foi possível coletar resultados no momento.")
+    return score
 
-else:
 
-    base_classificada = classificar(base)
+# ----------------------------------------------------------------------
 
-    analisados = base_classificada.head(30)
+df["score_seguranca"] = df["link"].apply(score_seguranca)
+df["score_confiabilidade"] = df["link"].apply(score_confiabilidade)
+df["score_pos_compra"] = df["link"].apply(score_pos_compra)
 
-    top10 = analisados.head(10)
+# custo/benefício é aproximado pela presença de grandes operadores
+df["score_custo_beneficio"] = df["link"].str.contains(
+    "superbid|sold|zukerman|mega|sato|vip|leil",
+    case=False,
+    na=False
+).astype(int) * 3
 
-    st.subheader("Resultado final – TOP 10 leilões de mercadorias")
+df["score_final"] = (
+    df["score_seguranca"] * 0.30 +
+    df["score_confiabilidade"] * 0.30 +
+    df["score_custo_beneficio"] * 0.20 +
+    df["score_pos_compra"] * 0.20
+)
 
-    st.caption(f"Total de leilões analisados: {len(analisados)}")
+df = df.sort_values("score_final", ascending=False).reset_index(drop=True)
 
-    tabela = top10[["titulo", "link", "score"]].copy()
-    tabela["score"] = tabela["score"].round(2)
+# ----------------------------------------------------------------------
+# Pelo menos 30 analisados
+# ----------------------------------------------------------------------
 
-    st.dataframe(tabela, use_container_width=True)
+total_analisados = len(df)
 
-    st.subheader("Links diretos dos 10 melhores")
+top10 = df.head(10)
 
-    for i, row in top10.iterrows():
-        st.markdown(f"- [{row['titulo']}]({row['link']})")
+# ----------------------------------------------------------------------
+
+st.success(f"Total de plataformas de leilão de mercadorias analisadas: {total_analisados}")
+
+st.subheader("TOP 10 – Plataformas de leilão de mercadorias")
+
+tabela = top10[[
+    "plataforma",
+    "link",
+    "score_final",
+    "score_seguranca",
+    "score_confiabilidade",
+    "score_custo_beneficio",
+    "score_pos_compra"
+]].copy()
+
+tabela["score_final"] = tabela["score_final"].round(2)
+
+st.dataframe(tabela, use_container_width=True)
+
+st.subheader("Links diretos")
+
+for _, row in top10.iterrows():
+    st.markdown(f"- [{row['plataforma']}]({row['link']})")
