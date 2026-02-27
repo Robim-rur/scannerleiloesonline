@@ -1,12 +1,10 @@
 import streamlit as st
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 import re
-
-try:
-    from duckduckgo_search import ddg
-except Exception:
-    st.error("Falha ao importar duckduckgo-search. Verifique o requirements.txt.")
-    st.stop()
+import time
+from urllib.parse import quote
 
 st.set_page_config(layout="wide")
 st.title("Ranking automático de leilões no Brasil – TOP 10 por categoria")
@@ -15,7 +13,8 @@ st.title("Ranking automático de leilões no Brasil – TOP 10 por categoria")
 # CONFIGURAÇÃO
 # =========================================================
 
-RESULTADOS_POR_BUSCA = 50
+RESULTADOS_POR_BUSCA = 40
+DELAY = 1.2
 
 categorias_consultas = {
     "Imóveis": [
@@ -35,9 +34,36 @@ categorias_consultas = {
     ]
 }
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
+
 # =========================================================
-# FUNÇÕES
+# FUNÇÕES DE COLETA
 # =========================================================
+
+def buscar_duckduckgo_html(consulta, max_itens=30):
+
+    url = "https://html.duckduckgo.com/html/?q=" + quote(consulta)
+
+    r = requests.post(url, headers=HEADERS, timeout=15)
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    resultados = []
+
+    for a in soup.select(".result__a"):
+        titulo = a.get_text(strip=True)
+        link = a.get("href")
+
+        if link and titulo:
+            resultados.append((titulo, link))
+
+        if len(resultados) >= max_itens:
+            break
+
+    return resultados
+
 
 def extrair_dominio(url):
     try:
@@ -45,6 +71,10 @@ def extrair_dominio(url):
     except:
         return ""
 
+
+# =========================================================
+# HEURÍSTICAS DE SCORE
+# =========================================================
 
 def score_seguranca_por_dominio(dominio):
 
@@ -65,49 +95,11 @@ def score_seguranca_por_dominio(dominio):
     return 0.6
 
 
-def buscar_leiloes_categoria(categoria, consultas):
-
-    registros = []
-
-    for consulta in consultas:
-        try:
-            resultados = ddg(
-                consulta,
-                region="br-pt",
-                max_results=RESULTADOS_POR_BUSCA
-            )
-
-            if resultados is None:
-                continue
-
-            for r in resultados:
-                registros.append({
-                    "categoria": categoria,
-                    "titulo": r.get("title", ""),
-                    "link": r.get("href", "")
-                })
-
-        except Exception as e:
-            st.warning(f"Falha na busca: {consulta}")
-
-    df = pd.DataFrame(registros)
-
-    if df.empty:
-        return df
-
-    df = df.dropna(subset=["link"])
-    df = df.drop_duplicates(subset=["link"])
-
-    return df
-
-
 def gerar_scores(df):
 
     df["dominio"] = df["link"].apply(extrair_dominio)
-
     df["score_seguranca"] = df["dominio"].apply(score_seguranca_por_dominio)
 
-    # proxies (não existem dados públicos reais de pós-venda e preço por lote)
     df["score_pos_compra"] = df["score_seguranca"]
     df["score_custo_beneficio"] = 0.5 + (df["score_seguranca"] * 0.5)
 
@@ -129,24 +121,47 @@ def gerar_scores(df):
 # EXECUÇÃO
 # =========================================================
 
-st.info("Buscando leilões públicos na internet e analisando dezenas de resultados por categoria...")
+st.info("Buscando leilões públicos na internet. Aguarde alguns segundos...")
 
 bases = []
 
 for categoria, consultas in categorias_consultas.items():
 
-    base = buscar_leiloes_categoria(categoria, consultas)
+    registros = []
 
-    if base.empty:
+    for consulta in consultas:
+
+        try:
+            resultados = buscar_duckduckgo_html(
+                consulta,
+                max_itens=RESULTADOS_POR_BUSCA
+            )
+
+            for titulo, link in resultados:
+                registros.append({
+                    "categoria": categoria,
+                    "titulo": titulo,
+                    "link": link
+                })
+
+            time.sleep(DELAY)
+
+        except Exception as e:
+            st.warning(f"Falha na busca: {consulta}")
+
+    df_cat = pd.DataFrame(registros)
+
+    if df_cat.empty:
         st.warning(f"Nenhum resultado encontrado para {categoria}.")
         continue
 
-    base = gerar_scores(base)
+    df_cat = df_cat.drop_duplicates(subset=["link"])
+    df_cat = gerar_scores(df_cat)
 
-    bases.append(base)
+    bases.append(df_cat)
 
 if not bases:
-    st.error("Não foi possível obter resultados.")
+    st.error("Não foi possível coletar resultados.")
     st.stop()
 
 df = pd.concat(bases, ignore_index=True)
@@ -166,7 +181,7 @@ contagem = (
 st.dataframe(contagem, use_container_width=True)
 
 # =========================================================
-# TOP 10 POR CATEGORIA (APENAS OS 10 MELHORES)
+# TOP 10 POR CATEGORIA
 # =========================================================
 
 st.subheader("TOP 10 melhores leilões por categoria")
@@ -202,4 +217,4 @@ for categoria in categorias_consultas.keys():
         use_container_width=True
     )
 
-st.success("Ranking TOP-10 concluído.")
+st.success("Ranking TOP-10 gerado com sucesso.")
