@@ -3,187 +3,169 @@ import pandas as pd
 from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("Ranking Top-10 de Plataformas de Leilão – Brasil")
 
-# =========================================================
+st.title("Ranking de Leilões – Brasil")
+st.caption("Classificação econômica por modalidade (Top 10 de cada categoria)")
+
+# =====================================================
 # PESOS DO MODELO
-# =========================================================
+# =====================================================
 
-PESO_SEGURANCA = 0.4
-PESO_CUSTO_BENEFICIO = 0.3
-PESO_RECLAMACOES = 0.2
-PESO_FEEDBACK = 0.1
+PESO_SEGURANCA = 0.40
+PESO_CUSTO_BENEFICIO = 0.30
+PESO_RECLAMACOES = 0.20
+PESO_FEEDBACK = 0.10
 
-# =========================================================
-# BASE SIMULADA (MVP)
-# Cada linha = plataforma + categoria
-# =========================================================
+# =====================================================
+# CARREGAMENTO DA BASE
+# =====================================================
 
-def carregar_dados_leiloes():
+@st.cache_data
+def carregar_base():
+    return pd.read_csv("dados_leiloes.csv")
 
-    dados = [
-        {
-            "plataforma": "Superbid",
-            "link": "https://www.superbid.net/",
-            "categoria": "Carros",
-            "preco_leilao": 38000,
-            "preco_mercado": 52000,
-            "score_seguranca": 9.2,
-            "reclamacoes_pos_compra": 12,
-            "score_feedback": 8.5
-        },
-        {
-            "plataforma": "Receita Federal",
-            "link": "https://www.gov.br/receitafederal/pt-br/assuntos/leiloes",
-            "categoria": "Eletrônicos",
-            "preco_leilao": 2100,
-            "preco_mercado": 3900,
-            "score_seguranca": 9.8,
-            "reclamacoes_pos_compra": 2,
-            "score_feedback": 9.3
-        },
-        {
-            "plataforma": "Copart",
-            "link": "https://www.copart.com.br/",
-            "categoria": "Salvados",
-            "preco_leilao": 14500,
-            "preco_mercado": 28000,
-            "score_seguranca": 8.6,
-            "reclamacoes_pos_compra": 22,
-            "score_feedback": 7.9
-        },
-        {
-            "plataforma": "Zukerman Leilões",
-            "link": "https://www.zukerman.com.br/",
-            "categoria": "Imóveis",
-            "preco_leilao": 310000,
-            "preco_mercado": 470000,
-            "score_seguranca": 9.0,
-            "reclamacoes_pos_compra": 6,
-            "score_feedback": 8.7
-        },
-        {
-            "plataforma": "Sold Leilões",
-            "link": "https://www.sold.com.br/",
-            "categoria": "Motos",
-            "preco_leilao": 7800,
-            "preco_mercado": 13500,
-            "score_seguranca": 8.3,
-            "reclamacoes_pos_compra": 18,
-            "score_feedback": 7.8
-        }
-        # aqui você pode estender com outras plataformas reais
-    ]
+# =====================================================
+# FUNÇÕES ECONÔMICAS
+# =====================================================
 
-    return pd.DataFrame(dados)
-
-# =========================================================
-# NORMALIZAÇÃO
-# =========================================================
-
-def calcular_desconto_percentual(preco_leilao, preco_mercado):
+def calcular_desconto(preco_leilao, preco_mercado):
     if preco_mercado <= 0:
         return 0
     return (preco_mercado - preco_leilao) / preco_mercado * 100
 
 
-def normalizar_reclamacoes(qtd, max_reclamacoes=50):
-    return max(10 * (1 - min(qtd, max_reclamacoes) / max_reclamacoes), 0)
+def normalizar_desconto(desconto, ref=60):
+    return max(0, min(10, (desconto / ref) * 10))
 
 
-def normalizar_desconto(desconto, desconto_maximo_referencia=60):
-    return max(10 * min(desconto, desconto_maximo_referencia) / desconto_maximo_referencia, 0)
+def normalizar_reclamacoes(qtd, max_ref=50):
+    score = 10 * (1 - min(qtd, max_ref) / max_ref)
+    return max(0, score)
 
-
-# =========================================================
-# CALCULA SCORE FINAL
-# =========================================================
 
 def calcular_score_final(linha):
-    score_custo_beneficio = normalizar_desconto(linha["desconto_percentual"])
-    score_reclamacoes = normalizar_reclamacoes(linha["reclamacoes_pos_compra"])
 
-    score_final = (
+    score_cb = normalizar_desconto(linha["desconto_percentual"])
+    score_rec = normalizar_reclamacoes(linha["reclamacoes_pos_compra"])
+
+    return (
         linha["score_seguranca"] * PESO_SEGURANCA +
-        score_custo_beneficio * PESO_CUSTO_BENEFICIO +
-        score_reclamacoes * PESO_RECLAMACOES +
+        score_cb * PESO_CUSTO_BENEFICIO +
+        score_rec * PESO_RECLAMACOES +
         linha["score_feedback"] * PESO_FEEDBACK
     )
 
-    return score_final
-
-# =========================================================
+# =====================================================
 # APP
-# =========================================================
+# =====================================================
 
-df = carregar_dados_leiloes()
+try:
+    df = carregar_base()
+except Exception as e:
+    st.error("Erro ao carregar dados_leiloes.csv")
+    st.stop()
+
+colunas_necessarias = [
+    "plataforma",
+    "link",
+    "categoria",
+    "preco_leilao",
+    "preco_mercado",
+    "score_seguranca",
+    "reclamacoes_pos_compra",
+    "score_feedback"
+]
+
+for c in colunas_necessarias:
+    if c not in df.columns:
+        st.error(f"Coluna obrigatória ausente: {c}")
+        st.stop()
+
+# =====================================================
+# PADRONIZAÇÃO DE CATEGORIAS
+# =====================================================
+
+df["categoria"] = df["categoria"].str.strip()
+
+# =====================================================
+# CÁLCULOS
+# =====================================================
 
 df["desconto_percentual"] = df.apply(
-    lambda x: calcular_desconto_percentual(x["preco_leilao"], x["preco_mercado"]),
+    lambda x: calcular_desconto(x["preco_leilao"], x["preco_mercado"]),
     axis=1
 )
 
-df["score_reclamacoes"] = df["reclamacoes_pos_compra"].apply(normalizar_reclamacoes)
 df["score_custo_beneficio"] = df["desconto_percentual"].apply(normalizar_desconto)
+df["score_reclamacoes"] = df["reclamacoes_pos_compra"].apply(normalizar_reclamacoes)
+
 df["score_final"] = df.apply(calcular_score_final, axis=1)
 
-# =========================================================
-# FILTROS
-# =========================================================
+# =====================================================
+# FILTRO DE CATEGORIA
+# =====================================================
 
 st.sidebar.header("Filtros")
 
-categorias = sorted(df["categoria"].unique())
-categoria_sel = st.sidebar.multiselect(
-    "Categoria",
+categorias = sorted(df["categoria"].unique().tolist())
+
+categorias_sel = st.sidebar.multiselect(
+    "Modalidades",
     categorias,
     default=categorias
 )
 
-df_filtrado = df[df["categoria"].isin(categoria_sel)].copy()
+df = df[df["categoria"].isin(categorias_sel)].copy()
 
-# =========================================================
-# RANKING TOP-10
-# =========================================================
+# =====================================================
+# RANKING E TOP 10
+# =====================================================
 
-df_ranked = (
-    df_filtrado
-    .sort_values(["categoria", "score_final"], ascending=[True, False])
-    .groupby("categoria")
-    .head(10)
-    .reset_index(drop=True)
+df = df.sort_values(
+    ["categoria", "score_final"],
+    ascending=[True, False]
 )
 
-df_ranked["ranking_na_categoria"] = (
-    df_ranked
-    .groupby("categoria")["score_final"]
-    .rank(ascending=False, method="dense")
-    .astype(int)
+df["ranking"] = (
+    df.groupby("categoria")["score_final"]
+      .rank(method="dense", ascending=False)
+      .astype(int)
 )
 
-# =========================================================
+df_top10 = (
+    df.sort_values(["categoria", "ranking"])
+      .groupby("categoria", group_keys=False)
+      .head(10)
+)
+
+# =====================================================
 # EXIBIÇÃO
-# =========================================================
+# =====================================================
 
-st.subheader("Top-10 das plataformas de leilão (por categoria)")
+st.subheader("Top 10 melhores leilões por modalidade")
 
-st.caption(f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.caption(
+    f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
+    f"Total de registros analisados: {len(df)}"
+)
 
-tabela = df_ranked[[
-    "categoria",
-    "ranking_na_categoria",
-    "plataforma",
-    "link",
-    "preco_leilao",
-    "preco_mercado",
-    "desconto_percentual",
-    "score_seguranca",
-    "reclamacoes_pos_compra",
-    "score_reclamacoes",
-    "score_custo_beneficio",
-    "score_feedback",
-    "score_final"
-]]
+tabela = df_top10[
+    [
+        "categoria",
+        "ranking",
+        "plataforma",
+        "link",
+        "preco_leilao",
+        "preco_mercado",
+        "desconto_percentual",
+        "score_seguranca",
+        "reclamacoes_pos_compra",
+        "score_reclamacoes",
+        "score_custo_beneficio",
+        "score_feedback",
+        "score_final"
+    ]
+]
 
 st.dataframe(
     tabela.style.format({
@@ -198,16 +180,30 @@ st.dataframe(
     use_container_width=True
 )
 
+# =====================================================
+# RESUMO POR CATEGORIA
+# =====================================================
+
+st.subheader("Quantidade de leilões analisados por modalidade")
+
+resumo = (
+    df.groupby("categoria")
+      .size()
+      .reset_index(name="qtde_leiloes")
+)
+
+st.dataframe(resumo, use_container_width=True)
+
+st.info(
+    "O ranking é sempre relativo dentro da própria modalidade "
+    "(veículos, imóveis, mercadorias etc.)."
+)
+
 st.markdown("### Pesos do modelo")
 
 st.write({
     "Segurança": PESO_SEGURANCA,
     "Custo-benefício": PESO_CUSTO_BENEFICIO,
-    "Reclamações": PESO_RECLAMACOES,
-    "Feedback": PESO_FEEDBACK
+    "Reclamações pós-compra": PESO_RECLAMACOES,
+    "Feedback dos usuários": PESO_FEEDBACK
 })
-
-st.info(
-    "Este ranking mostra até os 10 melhores leilões por categoria "
-    "(imóveis, carros, motos, eletrônicos, salvados etc.)."
-)
