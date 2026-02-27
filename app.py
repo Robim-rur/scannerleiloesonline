@@ -21,7 +21,7 @@ PESO_FEEDBACK = 0.10
 
 
 # =====================================================
-# CRIA ARQUIVO DE EXEMPLO SE NÃO EXISTIR
+# CRIA CSV DE EXEMPLO SE NÃO EXISTIR
 # =====================================================
 
 def criar_csv_exemplo():
@@ -51,14 +51,14 @@ def criar_csv_exemplo():
 
 
 # =====================================================
-# GARANTIA DE EXISTÊNCIA DO CSV
+# GARANTE QUE O CSV EXISTA
 # =====================================================
 
 if not os.path.exists(ARQUIVO):
     criar_csv_exemplo()
     st.warning(
-        "Arquivo dados_leiloes.csv não existia.\n"
-        "Um arquivo de exemplo foi criado automaticamente na pasta do projeto.\n\n"
+        "Arquivo dados_leiloes.csv não existia. "
+        "Um arquivo de exemplo foi criado automaticamente na pasta do projeto. "
         "Depois substitua o conteúdo pelos seus leilões reais."
     )
 
@@ -81,7 +81,7 @@ except Exception as e:
 
 
 # =====================================================
-# VALIDAÇÃO
+# VALIDAÇÃO DE COLUNAS
 # =====================================================
 
 colunas_obrigatorias = [
@@ -279,7 +279,7 @@ st.dataframe(
 
 
 # =====================================================
-# RESUMO DE AMOSTRA
+# RESUMO
 # =====================================================
 
 st.subheader("Quantidade de leilões analisados por modalidade")
@@ -300,7 +300,7 @@ st.dataframe(resumo, use_container_width=True)
 st.markdown("### Pesos do modelo")
 
 st.write({
-    "Segurança da plataforma": PESO_SEGURANCA,
+    "Segurança": PESO_SEGURANCA,
     "Custo-benefício": PESO_CUSTO_BENEFICIO,
     "Reclamações pós-compra": PESO_RECLAMACOES,
     "Feedback": PESO_FEEDBACK
@@ -308,6 +308,5 @@ st.write({
 
 st.info(
     "Cada linha do CSV representa um leilão (lote). "
-    "O ranking é sempre feito dentro da própria modalidade "
-    "(Veículos, Imóveis ou Mercadorias)."
+    "O ranking é sempre relativo dentro da própria modalidade."
 )
