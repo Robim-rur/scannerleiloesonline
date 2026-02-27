@@ -1,205 +1,151 @@
 import streamlit as st
 import pandas as pd
-from pathlib import Path
+import re
+from duckduckgo_search import DDGS
 
-st.set_page_config(page_title="Ranking de Leilões Online - Brasil", layout="wide")
+st.set_page_config(layout="wide")
+st.title("Ranking Automático de Leilões no Brasil (TOP-10)")
 
-st.title("Ranking de Leilões Online – Classificação por Categoria")
+# ---------------------------------------------------
+# CONFIGURAÇÃO DE BUSCAS
+# ---------------------------------------------------
 
-# ============================================================
-# CAMINHO GARANTIDO NA MESMA PASTA DO app.py
-# ============================================================
+QUANTIDADE_POR_CONSULTA = 100
 
-BASE_DIR = Path(__file__).resolve().parent
-CSV_PATH = BASE_DIR / "dados_leiloes.csv"
-
-# ============================================================
-# CRIA CSV DE EXEMPLO SE NÃO EXISTIR
-# ============================================================
-
-def criar_csv_exemplo(caminho):
-    dados = [
-        # ---------------- IMÓVEIS ----------------
-        ["Zukerman", "https://exemplo.com/imovel1", "Imóveis", 180000, 230000, 8.5, 12, 8.0],
-        ["Mega Leilões", "https://exemplo.com/imovel2", "Imóveis", 210000, 260000, 9.0, 9, 8.6],
-        ["Leilão Santander", "https://exemplo.com/imovel3", "Imóveis", 195000, 250000, 8.8, 7, 8.4],
-
-        # ---------------- VEÍCULOS ----------------
-        ["Sodré Santoro", "https://exemplo.com/carro1", "Veículos", 42000, 52000, 8.9, 18, 8.1],
-        ["Copart", "https://exemplo.com/carro2", "Veículos", 38000, 50000, 8.3, 22, 7.8],
-        ["Superbid", "https://exemplo.com/moto1", "Veículos", 12000, 17000, 8.6, 10, 8.2],
-
-        # ---------------- MERCADORIAS ----------------
-        ["Receita Federal", "https://exemplo.com/mercadoria1", "Mercadorias", 4500, 8500, 9.2, 5, 8.7],
-        ["Sold Leilões", "https://exemplo.com/mercadoria2", "Mercadorias", 2800, 6000, 8.4, 11, 7.9],
-        ["Leilão Judicial Brasil", "https://exemplo.com/mercadoria3", "Mercadorias", 1500, 4000, 8.0, 14, 7.5],
+categorias_consultas = {
+    "Imóveis": [
+        "leilão de imóveis site:leiloes",
+        "leilão judicial imóvel",
+        "leilão extrajudicial imóvel em Brasil"
+    ],
+    "Veículos": [
+        "leilão de carros em Brasil",
+        "leilão de motos em Brasil",
+        "leilão de veículos seguradora Brasil"
+    ],
+    "Mercadorias": [
+        "leilão de mercadorias apreendidas Brasil",
+        "leilão da receita federal mercadorias",
+        "leilão de ferramentas e eletrodomésticos Brasil"
     ]
+}
 
-    colunas = [
-        "plataforma",
-        "link",
-        "categoria",
-        "preco_leilao",
-        "preco_mercado",
-        "score_seguranca",
-        "reclamacoes_pos_compra",
-        "score_feedback"
+# ---------------------------------------------------
+# FUNÇÕES AUXILIARES
+# ---------------------------------------------------
+
+# heurística de segurança simples por domínio
+def score_seguranca_por_dominio(url):
+    dominios_fortes = [
+        "gov.br",
+        "zukerman.com.br",
+        "sodresantoro.com.br",
+        "copart.com.br",
+        "superbid.net",
+        "portalzukerman.com.br",
+        "leilaojudicial.com.br"
     ]
+    for d in dominios_fortes:
+        if d in url:
+            return 0.9
+    return 0.6
 
-    df = pd.DataFrame(dados, columns=colunas)
-    df.to_csv(caminho, index=False, encoding="utf-8-sig")
+def extrair_dominio(url):
+    try:
+        dominio = re.findall(r"https?://([^/]+)", url)[0]
+        return dominio
+    except:
+        return ""
 
+def buscar_leiloes(categoria, consultas):
+    resultados = []
+    with DDGS() as ddgs:
+        for q in consultas:
+            buscas = ddgs.text(q, max_results=QUANTIDADE_POR_CONSULTA)
+            for item in buscas:
+                resultados.append({
+                    "categoria": categoria,
+                    "titulo": item.get("title"),
+                    "link": item.get("href")
+                })
+    df = pd.DataFrame(resultados).drop_duplicates(subset=["link"])
+    return df
 
-if not CSV_PATH.exists():
-    criar_csv_exemplo(CSV_PATH)
-    st.warning(
-        "Arquivo dados_leiloes.csv não existia. "
-        "Um arquivo de exemplo foi criado automaticamente na pasta do projeto.\n\n"
-        "Depois substitua o conteúdo pelos seus leilões reais."
+def gerar_scores(df):
+    df["dominio"] = df["link"].apply(extrair_dominio)
+    df["score_seguranca"] = df["link"].apply(score_seguranca_por_dominio)
+
+    # heurística de custo-benefício vista como proxy (mesmo peso de segurança)
+    df["score_custo_beneficio"] = df["score_seguranca"] * 0.8
+
+    # heurística de reputação do título (proxy simples)
+    df["score_titulo"] = df["titulo"].apply(lambda x: len(str(x)))
+
+    # score final combina heurísticas
+    df["score_final"] = (
+          0.35 * df["score_seguranca"]
+        + 0.30 * df["score_custo_beneficio"]
+        + 0.20 * df["score_titulo"]
+        + 0.15 * df["score_seguranca"]
     )
 
-# ============================================================
-# CARREGAMENTO
-# ============================================================
+    return df
 
-try:
-    df = pd.read_csv(CSV_PATH)
-except Exception as e:
-    st.error(f"Erro ao carregar dados_leiloes.csv: {e}")
-    st.stop()
+# ---------------------------------------------------
+# EXECUÇÃO
+# ---------------------------------------------------
 
-# ============================================================
-# VALIDAÇÃO DE COLUNAS
-# ============================================================
+st.info("Buscando leilões automaticamente na web... isso pode levar alguns segundos.")
 
-colunas_necessarias = [
-    "plataforma",
-    "link",
-    "categoria",
-    "preco_leilao",
-    "preco_mercado",
-    "score_seguranca",
-    "reclamacoes_pos_compra",
-    "score_feedback"
-]
+todos_os_resultados = []
 
-faltando = [c for c in colunas_necessarias if c not in df.columns]
+for cat, consultas in categorias_consultas.items():
+    base_cat = buscar_leiloes(cat, consultas)
 
-if faltando:
-    st.error(f"Colunas obrigatórias ausentes no CSV: {faltando}")
-    st.stop()
-
-# ============================================================
-# LIMPEZA E NORMALIZAÇÃO
-# ============================================================
-
-df["categoria"] = df["categoria"].astype(str).str.strip()
-
-df["preco_leilao"] = pd.to_numeric(df["preco_leilao"], errors="coerce")
-df["preco_mercado"] = pd.to_numeric(df["preco_mercado"], errors="coerce")
-df["score_seguranca"] = pd.to_numeric(df["score_seguranca"], errors="coerce")
-df["reclamacoes_pos_compra"] = pd.to_numeric(df["reclamacoes_pos_compra"], errors="coerce")
-df["score_feedback"] = pd.to_numeric(df["score_feedback"], errors="coerce")
-
-df = df.dropna()
-
-# ============================================================
-# MÉTRICAS DO MODELO
-# ============================================================
-
-# custo-benefício
-df["beneficio"] = (df["preco_mercado"] - df["preco_leilao"]) / df["preco_mercado"]
-
-# inversão de reclamações
-df["reclamacoes_invertido"] = 1 / (1 + df["reclamacoes_pos_compra"])
-
-# normalização simples
-def normalizar(col):
-    return (col - col.min()) / (col.max() - col.min()) if col.max() != col.min() else 0.5
-
-df["n_beneficio"] = normalizar(df["beneficio"])
-df["n_seguranca"] = normalizar(df["score_seguranca"])
-df["n_feedback"] = normalizar(df["score_feedback"])
-df["n_reclamacoes"] = normalizar(df["reclamacoes_invertido"])
-
-# ============================================================
-# SCORE FINAL
-# ============================================================
-
-df["score_final"] = (
-      0.35 * df["n_seguranca"]
-    + 0.30 * df["n_beneficio"]
-    + 0.20 * df["n_reclamacoes"]
-    + 0.15 * df["n_feedback"]
-)
-
-# ============================================================
-# CONTADOR DE LEILÕES POR CATEGORIA
-# ============================================================
-
-st.subheader("Quantidade de leilões analisados por categoria")
-
-contagem = df["categoria"].value_counts().reset_index()
-contagem.columns = ["Categoria", "Quantidade"]
-
-st.dataframe(contagem, use_container_width=True)
-
-# ============================================================
-# FILTRO DE CATEGORIAS VÁLIDAS
-# ============================================================
-
-categorias_validas = ["Imóveis", "Veículos", "Mercadorias"]
-
-df = df[df["categoria"].isin(categorias_validas)]
-
-# ============================================================
-# RANKING TOP 10 POR CATEGORIA
-# ============================================================
-
-st.subheader("Ranking TOP 10 por categoria")
-
-for categoria in categorias_validas:
-
-    st.markdown(f"## {categoria}")
-
-    base = df[df["categoria"] == categoria].copy()
-
-    if base.empty:
-        st.info("Nenhum leilão encontrado para esta categoria.")
+    if len(base_cat) == 0:
+        st.warning(f"{cat}: nenhum leilão encontrado.")
         continue
 
-    ranking = (
-        base
-        .sort_values("score_final", ascending=False)
-        .head(10)
-        .reset_index(drop=True)
+    base_cat = gerar_scores(base_cat)
+    todos_os_resultados.append(base_cat)
+
+if not todos_os_resultados:
+    st.error("Nenhum resultado de leilão encontrado.")
+    st.stop()
+
+df_geral = pd.concat(todos_os_resultados, ignore_index=True)
+
+# ---------------------------------------------------
+# RANKING E EXIBIÇÃO TOP-10
+# ---------------------------------------------------
+
+for categoria in categorias_consultas.keys():
+
+    st.subheader(f"🔎 TOP-10 – {categoria}")
+
+    subset = df_geral[df_geral["categoria"] == categoria]
+
+    if subset.empty:
+        st.write("Nenhum resultado encontrado nesta categoria.")
+        continue
+
+    ranking_ordenado = (
+        subset.sort_values("score_final", ascending=False)
+              .head(10)
+              .reset_index(drop=True)
     )
 
-    ranking.insert(0, "Ranking", ranking.index + 1)
+    ranking_ordenado.insert(0, "Rank", ranking_ordenado.index + 1)
 
     st.dataframe(
-        ranking[
-            [
-                "Ranking",
-                "plataforma",
-                "link",
-                "preco_leilao",
-                "preco_mercado",
-                "score_seguranca",
-                "reclamacoes_pos_compra",
-                "score_feedback",
-                "beneficio",
-                "score_final"
-            ]
-        ],
+        ranking_ordenado[[
+            "Rank",
+            "titulo",
+            "link",
+            "dominio",
+            "score_final"
+        ]],
         use_container_width=True
     )
 
-# ============================================================
-# ALERTA DE AMOSTRA
-# ============================================================
-
-st.info(
-    "Para obter rankings confiáveis, recomenda-se no mínimo 30 leilões por categoria.\n"
-    "O número efetivamente analisado aparece na tabela de contagem acima."
-)
+st.success("Ranking TOP-10 concluído!")
