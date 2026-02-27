@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import os
 
 st.set_page_config(layout="wide")
 
 st.title("Ranking de Leilões – Brasil")
-st.caption("Classificação econômica por modalidade (Top 10 de cada categoria)")
+st.caption("Top 10 por modalidade | Classificação por risco x retorno")
 
 # =====================================================
 # PESOS DO MODELO
@@ -17,30 +18,105 @@ PESO_RECLAMACOES = 0.20
 PESO_FEEDBACK = 0.10
 
 # =====================================================
-# CARREGAMENTO DA BASE
+# CARREGAMENTO
 # =====================================================
+
+ARQUIVO = "dados_leiloes.csv"
 
 @st.cache_data
 def carregar_base():
-    return pd.read_csv("dados_leiloes.csv")
+    return pd.read_csv(ARQUIVO)
+
+if not os.path.exists(ARQUIVO):
+    st.error(
+        "Arquivo dados_leiloes.csv não encontrado na pasta do projeto.\n\n"
+        "Ele deve estar na mesma pasta do app.py."
+    )
+    st.stop()
+
+try:
+    df = carregar_base()
+except Exception as e:
+    st.error("Erro ao abrir dados_leiloes.csv")
+    st.write(e)
+    st.stop()
+
+# =====================================================
+# VALIDAÇÃO DAS COLUNAS
+# =====================================================
+
+colunas_obrigatorias = [
+    "plataforma",
+    "link",
+    "categoria",
+    "preco_leilao",
+    "preco_mercado",
+    "score_seguranca",
+    "reclamacoes_pos_compra",
+    "score_feedback"
+]
+
+faltantes = [c for c in colunas_obrigatorias if c not in df.columns]
+
+if len(faltantes) > 0:
+    st.error("Colunas obrigatórias ausentes:")
+    st.write(faltantes)
+    st.stop()
+
+# =====================================================
+# LIMPEZA BÁSICA
+# =====================================================
+
+df = df.copy()
+
+df["categoria"] = df["categoria"].astype(str).str.strip()
+
+# Padronização simples (evita erro de escrita)
+mapa_categorias = {
+    "Veiculos": "Veículos",
+    "veiculos": "Veículos",
+    "veículo": "Veículos",
+    "veiculo": "Veículos",
+    "imovel": "Imóveis",
+    "imoveis": "Imóveis",
+    "mercadoria": "Mercadorias",
+    "mercadorias": "Mercadorias"
+}
+
+df["categoria"] = df["categoria"].replace(mapa_categorias)
 
 # =====================================================
 # FUNÇÕES ECONÔMICAS
 # =====================================================
 
 def calcular_desconto(preco_leilao, preco_mercado):
+    try:
+        preco_leilao = float(preco_leilao)
+        preco_mercado = float(preco_mercado)
+    except:
+        return 0.0
+
     if preco_mercado <= 0:
-        return 0
-    return (preco_mercado - preco_leilao) / preco_mercado * 100
+        return 0.0
+
+    return (preco_mercado - preco_leilao) / preco_mercado * 100.0
 
 
-def normalizar_desconto(desconto, ref=60):
-    return max(0, min(10, (desconto / ref) * 10))
+def normalizar_desconto(desconto, referencia=60.0):
+    if desconto <= 0:
+        return 0.0
+    score = (desconto / referencia) * 10.0
+    return max(0.0, min(score, 10.0))
 
 
 def normalizar_reclamacoes(qtd, max_ref=50):
-    score = 10 * (1 - min(qtd, max_ref) / max_ref)
-    return max(0, score)
+    try:
+        qtd = float(qtd)
+    except:
+        qtd = max_ref
+
+    score = 10.0 * (1.0 - min(qtd, max_ref) / max_ref)
+    return max(0.0, score)
 
 
 def calcular_score_final(linha):
@@ -54,38 +130,6 @@ def calcular_score_final(linha):
         score_rec * PESO_RECLAMACOES +
         linha["score_feedback"] * PESO_FEEDBACK
     )
-
-# =====================================================
-# APP
-# =====================================================
-
-try:
-    df = carregar_base()
-except Exception as e:
-    st.error("Erro ao carregar dados_leiloes.csv")
-    st.stop()
-
-colunas_necessarias = [
-    "plataforma",
-    "link",
-    "categoria",
-    "preco_leilao",
-    "preco_mercado",
-    "score_seguranca",
-    "reclamacoes_pos_compra",
-    "score_feedback"
-]
-
-for c in colunas_necessarias:
-    if c not in df.columns:
-        st.error(f"Coluna obrigatória ausente: {c}")
-        st.stop()
-
-# =====================================================
-# PADRONIZAÇÃO DE CATEGORIAS
-# =====================================================
-
-df["categoria"] = df["categoria"].str.strip()
 
 # =====================================================
 # CÁLCULOS
@@ -102,12 +146,12 @@ df["score_reclamacoes"] = df["reclamacoes_pos_compra"].apply(normalizar_reclamac
 df["score_final"] = df.apply(calcular_score_final, axis=1)
 
 # =====================================================
-# FILTRO DE CATEGORIA
+# FILTROS
 # =====================================================
 
 st.sidebar.header("Filtros")
 
-categorias = sorted(df["categoria"].unique().tolist())
+categorias = sorted(df["categoria"].dropna().unique().tolist())
 
 categorias_sel = st.sidebar.multiselect(
     "Modalidades",
@@ -118,7 +162,7 @@ categorias_sel = st.sidebar.multiselect(
 df = df[df["categoria"].isin(categorias_sel)].copy()
 
 # =====================================================
-# RANKING E TOP 10
+# RANKING
 # =====================================================
 
 df = df.sort_values(
@@ -131,6 +175,10 @@ df["ranking"] = (
       .rank(method="dense", ascending=False)
       .astype(int)
 )
+
+# =====================================================
+# TOP 10 POR MODALIDADE
+# =====================================================
 
 df_top10 = (
     df.sort_values(["categoria", "ranking"])
@@ -145,8 +193,8 @@ df_top10 = (
 st.subheader("Top 10 melhores leilões por modalidade")
 
 st.caption(
-    f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')} | "
-    f"Total de registros analisados: {len(df)}"
+    f"Atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  "
+    f"Total de leilões analisados: {len(df)}"
 )
 
 tabela = df_top10[
@@ -181,7 +229,7 @@ st.dataframe(
 )
 
 # =====================================================
-# RESUMO POR CATEGORIA
+# RESUMO DE AMOSTRA
 # =====================================================
 
 st.subheader("Quantidade de leilões analisados por modalidade")
@@ -194,16 +242,21 @@ resumo = (
 
 st.dataframe(resumo, use_container_width=True)
 
-st.info(
-    "O ranking é sempre relativo dentro da própria modalidade "
-    "(veículos, imóveis, mercadorias etc.)."
-)
+# =====================================================
+# INFORMAÇÕES DO MODELO
+# =====================================================
 
-st.markdown("### Pesos do modelo")
+st.markdown("### Pesos do modelo de classificação")
 
 st.write({
-    "Segurança": PESO_SEGURANCA,
-    "Custo-benefício": PESO_CUSTO_BENEFICIO,
+    "Segurança da plataforma": PESO_SEGURANCA,
+    "Custo-benefício (desconto real)": PESO_CUSTO_BENEFICIO,
     "Reclamações pós-compra": PESO_RECLAMACOES,
     "Feedback dos usuários": PESO_FEEDBACK
 })
+
+st.info(
+    "Cada linha representa um leilão (lote). "
+    "O ranking é sempre relativo dentro da própria modalidade "
+    "(Veículos, Imóveis ou Mercadorias)."
+)
